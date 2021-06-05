@@ -28,4 +28,15 @@ We’ve previously detailed a variant of PPO that uses an adaptive KL penalty to
 ε is a hyperparameter, usually 0.1 or 0.2
 This objective implements a way to do a Trust Region update which is compatible with Stochastic Gradient Descent, and simplifies the algorithm by removing the KL penalty and need to make adaptive updates. In tests, this algorithm has displayed the best performance on continuous control tasks and almost matches ACER’s performance on Atari, despite being far simpler to implement.
 
+# Actor Critic 
+
+The Q value can be learned by parameterizing the Q function with a neural network.
+
+This leads us to Actor Critic Methods, where:
+
+The “Critic” estimates the value function. This could be the action-value (the Q value) or state-value (the V value).
+
+The “Actor” updates the policy distribution in the direction suggested by the Critic (such as with policy gradients).
+
+and both the Critic and Actor functions are parameterized with neural networks. The Critic neural network parameterizes the Q value — so, it is called Q Actor Critic.
 
