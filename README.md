@@ -57,3 +57,11 @@ Conceptually, this is like saying, "I have an idea of how to play this well, I'm
 Second, it uses Experience Replay.
 
 We store list of tuples (state, action, reward, next_state), and instead of learning only from recent experience, we learn from sampling all of our experience accumulated so far.
+
+# A3C
+
+Asynchronous Advantage Actor-Critic (Mnih et al., 2016), short for A3C, is a classic policy gradient method with a special focus on parallel training.
+
+In A3C, the critics learn the value function while multiple actors are trained in parallel and get synced with global parameters from time to time. Hence, A3C is designed to work well for parallel training.
+
+Let’s use the state-value function as an example. The loss function for state value is to minimize the mean squared error, Jv(w)=(Gt−Vw(s))^2 and gradient descent can be applied to find the optimal w. This state-value function is used as the baseline in the policy gradient update.
