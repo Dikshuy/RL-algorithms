@@ -1,5 +1,5 @@
-from ddpg_torch import Agent
-import gym
+from ddpg import Agent
+import gymnasium as gym
 import numpy as np
 from utils import plotLearning
 

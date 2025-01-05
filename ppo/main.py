@@ -1,10 +1,10 @@
-import gym
+import gymnasium as gym
 import numpy as np
-from ppo_torch import Agent
+from ppo import Agent
 from utils import plot_learning_curve
 
 if __name__ == '__main__':
-    env = gym.make('CartPole-v0')
+    env = gym.make('CartPole-v1')
     N = 20
     batch_size = 5
     n_epochs = 4

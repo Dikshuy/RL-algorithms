@@ -16,7 +16,7 @@ class GenericNetwork(nn.Module):
         self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims)
         self.fc3 = nn.Linear(self.fc2_dims, self.n_actions)
         self.optimizer = optim.Adam(self.parameters(), lr=alpha)
-        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cuda:1')
+        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
         self.to(self.device)
 
     def forward(self, observation):
@@ -37,20 +37,22 @@ class ActorCriticNetwork(nn.Module):
         self.n_actions = n_actions
         self.fc1 = nn.Linear(*self.input_dims, self.fc1_dims)
         self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims)
-        self.pi = nn.Linear(self.fc2_dims, self.n_actions)
+        self.mu = nn.Linear(self.fc2_dims, self.n_actions)
+        self.sigma = nn.Linear(self.fc2_dims, self.n_actions)
         self.v = nn.Linear(self.fc2_dims, 1)
         self.optimizer = optim.Adam(self.parameters(), lr=alpha)
-        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cuda:1')
+        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
         self.to(self.device)
 
     def forward(self, observation):
         state = T.tensor(observation, dtype=T.float).to(self.device)
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
-        pi = self.pi(x)
+        mu = self.mu(x)
+        sigma = self.sigma(x)
         v = self.v(x)
 
-        return pi, v
+        return mu, sigma, v
 
 class Agent(object):
     def __init__(self, alpha, beta, input_dims, gamma=0.99, n_actions=2,
@@ -58,14 +60,16 @@ class Agent(object):
         self.gamma = gamma
         self.log_probs = None
         self.n_outputs = n_outputs
+        self.n_actions = n_actions
         self.actor = GenericNetwork(alpha, input_dims, layer1_size,
-                                           layer2_size, n_actions=n_actions)
+                                           layer2_size, n_actions=n_actions*2)
         self.critic = GenericNetwork(beta, input_dims, layer1_size,
                                             layer2_size, n_actions=1)
 
     def choose_action(self, observation):
-        mu, sigma  = self.actor.forward(observation)#.to(self.actor.device)
-        sigma = T.exp(sigma)
+        actions  = self.actor.forward(observation)#.to(self.actor.device)
+        mu = actions[:self.n_actions]
+        sigma = F.softplus(actions[self.n_actions:])
         action_probs = T.distributions.Normal(mu, sigma)
         probs = action_probs.sample(sample_shape=T.Size([self.n_outputs]))
         self.log_probs = action_probs.log_prob(probs).to(self.actor.device)
@@ -92,7 +96,7 @@ class Agent(object):
         self.critic.optimizer.step()
 
 class NewAgent(object):
-    def __init__(self, alpha, beta, input_dims, gamma=0.99, n_actions=2,
+    def __init__(self, alpha, input_dims, gamma=0.99, n_actions=2,
                  layer1_size=256, layer2_size=256, n_outputs=1):
         self.gamma = gamma
         self.log_probs = None
@@ -101,10 +105,10 @@ class NewAgent(object):
                                         layer2_size, n_actions=n_actions)
 
     def choose_action(self, observation):
-        pi, v = self.actor_critic.forward(observation)
+        mu, sigma, v = self.actor_critic.forward(observation)
 
-        mu, sigma = pi
-        sigma = T.exp(sigma)
+        # mu, sigma = pi
+        sigma = F.softplus(sigma)
         action_probs = T.distributions.Normal(mu, sigma)
         probs = action_probs.sample(sample_shape=T.Size([self.n_outputs]))
         self.log_probs = action_probs.log_prob(probs).to(self.actor_critic.device)
@@ -115,8 +119,8 @@ class NewAgent(object):
     def learn(self, state, reward, new_state, done):
         self.actor_critic.optimizer.zero_grad()
 
-        _, critic_value_ = self.actor_critic.forward(new_state)
-        _, critic_value = self.actor_critic.forward(state)
+        _, _, critic_value_ = self.actor_critic.forward(new_state)
+        _, _, critic_value = self.actor_critic.forward(state)
 
         reward = T.tensor(reward, dtype=T.float).to(self.actor_critic.device)
         delta = reward + self.gamma*critic_value_*(1-int(done)) - critic_value
