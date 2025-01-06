@@ -53,8 +53,6 @@ class agent():
     
     def learn(self, transitions):
         timestep = len(transitions)
-        loss = 0
-        loss_V = 0
         returns = T.zeros(timestep, 1).to(self.device)
         log_probs = T.zeros(timestep, 1).to(self.device)
         self.G = 0

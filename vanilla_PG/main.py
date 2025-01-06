@@ -12,13 +12,13 @@ device='cpu'
 
 reinforce_agent = agent(n_state, n_action, alpha, gamma, device)
 
-for episode in range(10000):
+for episode in range(5000):
     t = 0
     transitions = []
     obs, _ = env.reset()
     total_reward = 0
     done = False
-    while not done and t < 300:
+    while not done and t < 500:
         action = reinforce_agent.choose_action(obs)
         next_obs, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
