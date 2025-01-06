@@ -48,7 +48,6 @@ class PolicyNetwork(nn.Module):
     def __init__(self, n_state, n_action, min_log_std=-20, max_log_std=2):
         super(PolicyNetwork, self).__init__()
         self.n_state = n_state
-        self.n_action = n_action
 
         self.fc1 = nn.Linear(n_state, 256)
         self.fc2 = nn.Linear(256, 256)
@@ -84,13 +83,14 @@ class SAC():
 
         self.gamma = gamma
         self.device = device
+        self.n_action = n_action
 
         self.value_criterion = nn.MSELoss()
         self.q1_criterion = nn.MSELoss()
         self.q2_criterion = nn.MSELoss()
 
         self.capacity = capacity
-        self.replay_buffer = [Transition]*self.capacity
+        self.replay_buffer = []
         self.num_transitions = 0
         self.num_training = 1
 
@@ -110,10 +110,14 @@ class SAC():
         dist = T.distributions.Normal(mu, std)
         z = dist.sample()
         action = T.tanh(z).detach().cpu().numpy().flatten()
-        return action.item()
+        return action
     
     def store_transition(self, s, a, r, s_, d):
-        self.replay_buffer[self.num_transitions % self.capacity] = s, a, r, s_, d
+        transition = Transition(s, a, r, s_, d)
+        if len(self.replay_buffer) < self.capacity:
+            self.replay_buffer.append(transition)
+        else:
+            self.replay_buffer[self.num_transitions % self.capacity] = transition
         self.num_transitions += 1
 
     def evaluate(self, state):
@@ -128,51 +132,40 @@ class SAC():
         return action, log_prob
     
     def update(self):
-        if self.num_transitions < self.batch_size:
-            return
         if self.num_training % 500 == 0:
             print("Training .. {} times".format(self.num_training))
 
-        valid_transitions = [t for t in self.replay_buffer if t is not None]
-        if len(valid_transitions) < self.batch_size:
+        if len(self.replay_buffer) < self.batch_size:
             return
-
-        s = T.tensor([t.s for t in self.replay_buffer if t is not None], dtype=T.float).to(self.device)
-        a = T.tensor([t.a for t in self.replay_buffer if t is not None]).to(self.device)
-        r = T.tensor([t.r for t in self.replay_buffer if t is not None]).to(self.device)
-        s_ = T.tensor([t.s_ for t in self.replay_buffer if t is not None], dtype=T.float).to(self.device)
-        d = T.tensor([t.d for t in self.replay_buffer if t is not None]).to(self.device)
+        
+        batch_indices = np.random.choice(len(self.replay_buffer), self.batch_size, replace=False)
+        batch = [self.replay_buffer[idx] for idx in batch_indices]
+        
+        # Convert to numpy arrays first
+        states = np.array([t.s for t in batch])
+        actions = np.array([t.a for t in batch])
+        rewards = np.array([t.r for t in batch])
+        next_states = np.array([t.s_ for t in batch])
+        dones = np.array([t.d for t in batch])
+        
+        # Convert to tensors
+        states = T.FloatTensor(states).to(self.device)
+        actions = T.FloatTensor(actions).reshape(-1, self.n_action).to(self.device)
+        rewards = T.FloatTensor(rewards).reshape(-1, 1).to(self.device)
+        next_states = T.FloatTensor(next_states).to(self.device)
+        dones = T.FloatTensor(dones).reshape(-1, 1).to(self.device)
 
         for _ in range(self.gradient_steps):
-            index = np.random.choice(self.capacity, self.batch_size, replace=False)
-            batch_s = s[index]
-            batch_a = a[index].reshape(-1, 1)
-            batch_r = r[index].reshape(-1, 1)
-            batch_s_ = s_[index]
-            batch_d = d[index].reshape(-1, 1)
+            with T.no_grad():
+                target_value = self.target_value(next_states)
+                q_next = rewards + self.gamma * (1 - dones) * target_value
 
-            target_value = self.target_value(batch_s_)
-            q_next = batch_r + self.gamma * (1 - batch_d) * target_value
-
-            expected_value = self.value(batch_s)
-            expected_q1 = self.q1(batch_s, batch_a)
-            expected_q2 = self.q2(batch_s, batch_a)
-
-            sample_action, log_prob = self.evaluate(batch_s)
-            expected_new_q = T.min(self.q1(batch_s, sample_action), self.q2(batch_s, sample_action))
-            next_value = expected_new_q - log_prob
-
-            value_loss = self.value_criterion(expected_value, next_value.detach()).mean()
+            expected_value = self.value(states)
+            expected_q1 = self.q1(states, actions)
+            expected_q2 = self.q2(states, actions)
 
             q1_loss = self.q1_criterion(expected_q1, q_next.detach()).mean()
             q2_loss = self.q2_criterion(expected_q2, q_next.detach()).mean()
-
-            pi_loss = (log_prob - expected_new_q).mean()
-
-            self.value_optim.zero_grad()
-            value_loss.backward(retain_graph=True)
-            nn.utils.clip_grad_norm_(self.value.parameters(), 0.5)
-            self.value_optim.step()
 
             self.q1_optim.zero_grad()
             q1_loss.backward(retain_graph=True)
@@ -183,6 +176,19 @@ class SAC():
             q2_loss.backward(retain_graph=True)
             nn.utils.clip_grad_norm_(self.q2.parameters(), 0.5)
             self.q2_optim.step()
+
+            sample_action, log_prob = self.evaluate(states)
+            expected_new_q = T.min(self.q1(states, sample_action), self.q2(states, sample_action))
+            next_value = expected_new_q - log_prob
+
+            value_loss = self.value_criterion(expected_value, next_value.detach()).mean()
+
+            self.value_optim.zero_grad()
+            value_loss.backward(retain_graph=True)
+            nn.utils.clip_grad_norm_(self.value.parameters(), 0.5)
+            self.value_optim.step()
+
+            pi_loss = (log_prob - expected_new_q).mean()
 
             self.policy_optim.zero_grad()
             pi_loss.backward()

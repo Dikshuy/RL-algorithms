@@ -33,11 +33,11 @@ for i in range(iterations):
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
         sac_agent.store_transition(obs, action, reward, next_state, done)
-        if sac_agent.num_transitions >= sac_agent.batch_size:
+        if len(sac_agent.replay_buffer) >= sac_agent.batch_size:
             sac_agent.update()
         obs = next_state
         episode_reward += reward
     if i % log_interval == 0:
-        sac_agent.save_models()
+        sac_agent.save_model()
 
     print(f"Episode {i} reward: {episode_reward}")
