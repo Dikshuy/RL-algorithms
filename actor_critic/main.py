@@ -2,7 +2,6 @@ import gymnasium as gym
 from actor_critic import agent
 
 env=gym.make('CartPole-v1')
-env=env.unwrapped
 n_action=env.action_space.n
 n_state=env.observation_space.shape[0]
 
@@ -12,7 +11,7 @@ device='cpu'
 
 ac_agent = agent(n_state, n_action, alpha, gamma, device)
 
-for episode in range(10000):
+for episode in range(5000):
     obs, _ = env.reset()
     total_reward = 0
     done = False
