@@ -4,131 +4,73 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 
-class GenericNetwork(nn.Module):
-    def __init__(self, alpha, input_dims, fc1_dims, fc2_dims,
-                 n_actions):
-        super(GenericNetwork, self).__init__()
-        self.input_dims = input_dims
-        self.fc1_dims = fc1_dims
-        self.fc2_dims = fc2_dims
-        self.n_actions = n_actions
-        self.fc1 = nn.Linear(*self.input_dims, self.fc1_dims)
-        self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims)
-        self.fc3 = nn.Linear(self.fc2_dims, self.n_actions)
-        self.optimizer = optim.Adam(self.parameters(), lr=alpha)
-        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
-        self.to(self.device)
+class actor(nn.Module):
+    def __init__(self, n_state, n_action):
+        super(actor, self).__init__()
+        self.fc1 = nn.Linear(n_state, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, n_action)
+        self.softmax = nn.Softmax(dim=-1)
 
-    def forward(self, observation):
-        state = T.tensor(observation, dtype=T.float).to(self.device)
-        x = F.relu(self.fc1(state))
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
+        prob = self.softmax(x)
+        return prob
+    
+class critic(nn.Module):
+    def __init__(self, n_state):
+        super(critic, self).__init__()
+        self.fc1 = nn.Linear(n_state, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 1)
 
-        return x
-
-class ActorCriticNetwork(nn.Module):
-    def __init__(self, alpha, input_dims, fc1_dims, fc2_dims,
-                 n_actions):
-        super(ActorCriticNetwork, self).__init__()
-        self.input_dims = input_dims
-        self.fc1_dims = fc1_dims
-        self.fc2_dims = fc2_dims
-        self.n_actions = n_actions
-        self.fc1 = nn.Linear(*self.input_dims, self.fc1_dims)
-        self.fc2 = nn.Linear(self.fc1_dims, self.fc2_dims)
-        self.mu = nn.Linear(self.fc2_dims, self.n_actions)
-        self.sigma = nn.Linear(self.fc2_dims, self.n_actions)
-        self.v = nn.Linear(self.fc2_dims, 1)
-        self.optimizer = optim.Adam(self.parameters(), lr=alpha)
-        self.device = T.device('cuda:0' if T.cuda.is_available() else 'cpu')
-        self.to(self.device)
-
-    def forward(self, observation):
-        state = T.tensor(observation, dtype=T.float).to(self.device)
-        x = F.relu(self.fc1(state))
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        mu = self.mu(x)
-        sigma = self.sigma(x)
-        v = self.v(x)
-
-        return mu, sigma, v
-
-class Agent(object):
-    def __init__(self, alpha, beta, input_dims, gamma=0.99, n_actions=2,
-                 layer1_size=256, layer2_size=256, n_outputs=1):
+        x = self.fc3(x)
+        return x
+    
+class agent():
+    def __init__(self, state_dim, n_action, alpha=0.0003, gamma=0.99, device='cpu'):
+        self.actor = actor(state_dim, n_action).to(device)
+        self.critic = critic(state_dim).to(device)
         self.gamma = gamma
-        self.log_probs = None
-        self.n_outputs = n_outputs
-        self.n_actions = n_actions
-        self.actor = GenericNetwork(alpha, input_dims, layer1_size,
-                                           layer2_size, n_actions=n_actions*2)
-        self.critic = GenericNetwork(beta, input_dims, layer1_size,
-                                            layer2_size, n_actions=1)
+        self.device = device
 
-    def choose_action(self, observation):
-        actions  = self.actor.forward(observation)#.to(self.actor.device)
-        mu = actions[:self.n_actions]
-        sigma = F.softplus(actions[self.n_actions:])
-        action_probs = T.distributions.Normal(mu, sigma)
-        probs = action_probs.sample(sample_shape=T.Size([self.n_outputs]))
-        self.log_probs = action_probs.log_prob(probs).to(self.actor.device)
-        action = T.tanh(probs)
+        self.actor_optim = optim.Adam(self.actor.parameters(), lr=alpha)
+        self.critic_optim = optim.Adam(self.critic.parameters(), lr=alpha)
 
+    def choose_action(self, state):
+        state = T.tensor(state, dtype=T.float).unsqueeze(0).to(self.device) 
+        prob = self.actor(state)
+        dist = T.distributions.Categorical(prob)
+        action = dist.sample()
         return action.item()
+    
+    def actor_learn(self, state, action, td):
+        state = T.tensor(state, dtype=T.float).unsqueeze(0).to(self.device) 
+        prob = self.actor(state)
+        prob = prob[0, action]
+        self.actor_optim.zero_grad()
+        loss = -(T.log(prob) * td.detach())
+        loss.backward()
+        self.actor_optim.step()
 
-    def learn(self, state, reward, new_state, done):
-        self.actor.optimizer.zero_grad()
-        self.critic.optimizer.zero_grad()
+    def critic_learn(self, transition):
+        state, reward, _, next_state, done = transition
+        state = T.tensor(state, dtype=T.float).unsqueeze(0).to(self.device) 
+        next_state = T.tensor(next_state, dtype=T.float).unsqueeze(0).to(self.device) 
+        reward = T.tensor([reward], dtype=T.float).to(self.device)
+        done = T.tensor([done], dtype=T.float).to(self.device)
 
-        critic_value_ = self.critic.forward(new_state)
-        critic_value = self.critic.forward(state)
-        reward = T.tensor(reward, dtype=T.float).to(self.actor.device)
-        delta = ((reward + self.gamma*critic_value_*(1-int(done))) - \
-                                                                critic_value)
+        td_target = reward + self.gamma * self.critic(next_state) * (1 - done)
+        td_error = td_target - self.critic(state)
 
-        actor_loss = -self.log_probs * delta
-        critic_loss = delta**2
+        self.critic_optim.zero_grad()
+        loss = td_error**2
+        loss.backward()
+        self.critic_optim.step()
 
-        (actor_loss + critic_loss).backward()
-
-        self.actor.optimizer.step()
-        self.critic.optimizer.step()
-
-class NewAgent(object):
-    def __init__(self, alpha, input_dims, gamma=0.99, n_actions=2,
-                 layer1_size=256, layer2_size=256, n_outputs=1):
-        self.gamma = gamma
-        self.log_probs = None
-        self.n_outputs = n_outputs
-        self.actor_critic = ActorCriticNetwork(alpha, input_dims, layer1_size,
-                                        layer2_size, n_actions=n_actions)
-
-    def choose_action(self, observation):
-        mu, sigma, v = self.actor_critic.forward(observation)
-
-        # mu, sigma = pi
-        sigma = F.softplus(sigma)
-        action_probs = T.distributions.Normal(mu, sigma)
-        probs = action_probs.sample(sample_shape=T.Size([self.n_outputs]))
-        self.log_probs = action_probs.log_prob(probs).to(self.actor_critic.device)
-        action = T.tanh(probs)
-
-        return action.item()
-
-    def learn(self, state, reward, new_state, done):
-        self.actor_critic.optimizer.zero_grad()
-
-        _, _, critic_value_ = self.actor_critic.forward(new_state)
-        _, _, critic_value = self.actor_critic.forward(state)
-
-        reward = T.tensor(reward, dtype=T.float).to(self.actor_critic.device)
-        delta = reward + self.gamma*critic_value_*(1-int(done)) - critic_value
-
-        actor_loss = -self.log_probs * delta
-        critic_loss = delta**2
-
-        (actor_loss + critic_loss).backward()
-
-        self.actor_critic.optimizer.step()
-
+        return td_error
