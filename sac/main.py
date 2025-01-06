@@ -1,10 +1,9 @@
 import numpy as np
 import gymnasium as gym
-from sac import SAC, NormalizedActions
+from sac import SAC
 
-env=gym.make('CartPole-v1')
-env = NormalizedActions(env)
-n_action=env.action_space.n
+env=gym.make('Pendulum-v1')
+n_action=env.action_space.shape[0]
 n_state=env.observation_space.shape[0]
 
 alpha=0.0003
@@ -22,8 +21,8 @@ load = False
 
 sac_agent = SAC(n_state, n_action, alpha, gamma, capacity, gradient_steps, batch_size, tau, device)
 
-if load:    sac_agent.load_models()
-
+if load:    
+    sac_agent.load_models()
 
 for i in range(iterations):
     obs, _ = env.reset()
@@ -34,7 +33,7 @@ for i in range(iterations):
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
         sac_agent.store_transition(obs, action, reward, next_state, done)
-        if sac_agent.num_transitions >= capacity:
+        if sac_agent.num_transitions >= sac_agent.batch_size:
             sac_agent.update()
         obs = next_state
         episode_reward += reward

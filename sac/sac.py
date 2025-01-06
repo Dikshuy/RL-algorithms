@@ -10,25 +10,6 @@ import torch.optim as optim
 
 
 Transition = namedtuple('Transition', ['s', 'a', 'r', 's_', 'd'])
-
-class NormalizedActions(gym.ActionWrapper):
-    def _action(self, action):
-        low = self.action_space.low
-        high = self.action_space.high
-
-        action = low + (action + 1.0) * 0.5 * (high - low)
-        action = np.clip(action, low, high)
-
-        return action
-
-    def _reverse_action(self, action):
-        low = self.action_space.low
-        high = self.action_space.high
-
-        action = 2 * (action - low) / (high - low) - 1
-        action = np.clip(action, low, high)
-
-        return action
     
 class QNetwork(nn.Module):
     def __init__(self, n_state, n_action):
@@ -64,19 +45,18 @@ class ValueNetwork(nn.Module):
         return value
     
 class PolicyNetwork(nn.Module):
-    def __init__(self, n_state, min_log_std=-20, max_log_std=2):
+    def __init__(self, n_state, n_action, min_log_std=-20, max_log_std=2):
         super(PolicyNetwork, self).__init__()
         self.n_state = n_state
+        self.n_action = n_action
 
         self.fc1 = nn.Linear(n_state, 256)
         self.fc2 = nn.Linear(256, 256)
-        self.mu_head = nn.Linear(256, 1)
-        self.log_std_head = nn.Linear(256, 1)
+        self.mu_head = nn.Linear(256, n_action)
+        self.log_std_head = nn.Linear(256, n_action)
 
-        # self.max_action = ???
         self.max_log_std = max_log_std
         self.min_log_std = min_log_std
-
 
     def forward(self, state):
         x = F.relu(self.fc1(state))
@@ -91,7 +71,7 @@ class SAC():
     def __init__(self, state_dim, n_action, alpha=0.0003, gamma=0.99, capacity=10000, gradient_steps=1, batch_size=64, tau=0.005, device='cpu'):
         super(SAC, self).__init__()
 
-        self.policy = PolicyNetwork(state_dim).to(device)
+        self.policy = PolicyNetwork(state_dim, n_action).to(device)
         self.value = ValueNetwork(state_dim).to(device)
         self.target_value = ValueNetwork(state_dim).to(device)
         self.q1 = QNetwork(state_dim, n_action).to(device)
@@ -129,7 +109,7 @@ class SAC():
         std = T.exp(log_std)
         dist = T.distributions.Normal(mu, std)
         z = dist.sample()
-        action = T.tanh(z).detach().cpu().numpy()
+        action = T.tanh(z).detach().cpu().numpy().flatten()
         return action.item()
     
     def store_transition(self, s, a, r, s_, d):
@@ -148,8 +128,14 @@ class SAC():
         return action, log_prob
     
     def update(self):
+        if self.num_transitions < self.batch_size:
+            return
         if self.num_training % 500 == 0:
             print("Training .. {} times".format(self.num_training))
+
+        valid_transitions = [t for t in self.replay_buffer if t is not None]
+        if len(valid_transitions) < self.batch_size:
+            return
 
         s = T.tensor([t.s for t in self.replay_buffer if t is not None], dtype=T.float).to(self.device)
         a = T.tensor([t.a for t in self.replay_buffer if t is not None]).to(self.device)
