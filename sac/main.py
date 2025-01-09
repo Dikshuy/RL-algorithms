@@ -46,7 +46,9 @@ def train_sac(seed):
         returns.append(episode_reward)
         
         if i % log_interval == 0:
-            print(f"Seed {seed}, Episode {i}, Reward: {episode_reward}")
+            sac_agent.save_model()
+            
+        print(f"Seed {seed}, Episode {i}, Reward: {episode_reward}")
             
     return returns
 
@@ -73,14 +75,15 @@ def plot_returns(all_returns, seeds, window=100):
     
     plt.xlabel('Episode')
     plt.ylabel('Return')
-    plt.title('SAC Training Returns with 95% Confidence Interval')
+    plt.title('returns for pendulum using SAC')
     plt.legend()
     plt.grid(True)
     plt.savefig('sac_returns.png')
     plt.show()
 
 if __name__ == "__main__":
-    seeds = [1, 2, 3, 4, 5]
+    num_seeds = 30
+    seeds = [i for i in range(num_seeds)]
     all_returns = {}
     
     for seed in seeds:
