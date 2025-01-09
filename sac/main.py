@@ -19,7 +19,7 @@ log_interval = 2000
 
 load = False
 
-sac_agent = SAC(n_state, n_action, alpha, gamma, capacity, gradient_steps, batch_size, tau, device)
+sac_agent = SAC(env, n_state, n_action, alpha, gamma, capacity, gradient_steps, batch_size, tau, device)
 
 if load:    
     sac_agent.load_models()
@@ -33,7 +33,7 @@ for i in range(iterations):
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
         sac_agent.store_transition(obs, action, reward, next_state, done)
-        if len(sac_agent.replay_buffer) >= sac_agent.batch_size:
+        if sac_agent.replay_buffer.pos >= sac_agent.batch_size:
             sac_agent.update()
         obs = next_state
         episode_reward += reward

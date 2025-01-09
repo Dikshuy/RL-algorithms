@@ -1,6 +1,5 @@
 import os
 import numpy as np
-from collections import namedtuple
 import gymnasium as gym
 
 import torch as T
@@ -8,8 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-
-Transition = namedtuple('Transition', ['s', 'a', 'r', 's_', 'd'])
+from stable_baselines3.common.buffers import ReplayBuffer
     
 class QNetwork(nn.Module):
     def __init__(self, n_state, n_action):
@@ -67,7 +65,7 @@ class PolicyNetwork(nn.Module):
         return mu, log_std_head
     
 class SAC():
-    def __init__(self, state_dim, n_action, alpha=0.0003, gamma=0.99, capacity=10000, gradient_steps=1, batch_size=64, tau=0.005, device='cpu'):
+    def __init__(self, env, state_dim, n_action, alpha=0.0003, gamma=0.99, capacity=10000, gradient_steps=1, batch_size=64, tau=0.005, device='cpu'):
         super(SAC, self).__init__()
 
         self.policy = PolicyNetwork(state_dim, n_action).to(device)
@@ -85,21 +83,19 @@ class SAC():
         self.device = device
         self.n_action = n_action
 
+        self.replay_buffer = ReplayBuffer(capacity, env.observation_space, env.action_space, device=device, n_envs=1)
+
         self.value_criterion = nn.MSELoss()
         self.q1_criterion = nn.MSELoss()
         self.q2_criterion = nn.MSELoss()
 
-        self.capacity = capacity
-        self.replay_buffer = []
-        self.num_transitions = 0
+        self.gradient_steps = gradient_steps
+        self.batch_size = batch_size
+        self.tau = tau
         self.num_training = 1
 
         for target_param, param in zip(self.target_value.parameters(), self.value.parameters()):
             target_param.data.copy_(param.data)
-
-        self.gradient_steps = gradient_steps
-        self.batch_size = batch_size
-        self.tau = tau
 
         os.makedirs('./model/', exist_ok=True)
 
@@ -112,13 +108,19 @@ class SAC():
         action = T.tanh(z).detach().cpu().numpy().flatten()
         return action
     
-    def store_transition(self, s, a, r, s_, d):
-        transition = Transition(s, a, r, s_, d)
-        if len(self.replay_buffer) < self.capacity:
-            self.replay_buffer.append(transition)
-        else:
-            self.replay_buffer[self.num_transitions % self.capacity] = transition
-        self.num_transitions += 1
+    def store_transition(self, obs, action, reward, next_obs, done):
+        obs = np.array(obs)
+        next_obs = np.array(next_obs)
+        action = np.array(action)
+        
+        self.replay_buffer.add(
+            obs,
+            next_obs,
+            action,
+            reward,
+            done,
+            [{}]
+        )
 
     def evaluate(self, state):
         batch_mu, batch_std = self.policy(state)
@@ -135,25 +137,24 @@ class SAC():
         if self.num_training % 500 == 0:
             print("Training .. {} times".format(self.num_training))
 
-        if len(self.replay_buffer) < self.batch_size:
+        if self.replay_buffer.pos < self.batch_size:
             return
         
-        batch_indices = np.random.choice(len(self.replay_buffer), self.batch_size, replace=False)
-        batch = [self.replay_buffer[idx] for idx in batch_indices]
+        data = self.replay_buffer.sample(self.batch_size)
         
-        # Convert to numpy arrays first
-        states = np.array([t.s for t in batch])
-        actions = np.array([t.a for t in batch])
-        rewards = np.array([t.r for t in batch])
-        next_states = np.array([t.s_ for t in batch])
-        dones = np.array([t.d for t in batch])
+        states = data.observations
+        next_states = data.next_observations
+        actions = data.actions
+        rewards = data.rewards.reshape(-1, 1)
+        dones = data.dones.reshape(-1, 1)
         
         # Convert to tensors
-        states = T.FloatTensor(states).to(self.device)
-        actions = T.FloatTensor(actions).reshape(-1, self.n_action).to(self.device)
-        rewards = T.FloatTensor(rewards).reshape(-1, 1).to(self.device)
-        next_states = T.FloatTensor(next_states).to(self.device)
-        dones = T.FloatTensor(dones).reshape(-1, 1).to(self.device)
+        if not isinstance(states, T.Tensor):
+            states = T.FloatTensor(states).to(self.device)
+            actions = T.FloatTensor(actions).reshape(-1, self.n_action).to(self.device)
+            rewards = T.FloatTensor(rewards).reshape(-1, 1).to(self.device)
+            next_states = T.FloatTensor(next_states).to(self.device)
+            dones = T.FloatTensor(dones).reshape(-1, 1).to(self.device)
 
         for _ in range(self.gradient_steps):
             with T.no_grad():
