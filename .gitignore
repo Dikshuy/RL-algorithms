@@ -7,7 +7,9 @@
 .benchmarks
 .ruff_cache
 
+# models
 model/
+discrete_model/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
