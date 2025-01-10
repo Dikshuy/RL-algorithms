@@ -1,350 +1,218 @@
 import os
-import random
-import time
-from dataclasses import dataclass
-
 import numpy as np
 import gymnasium as gym
-import ale_py
 
 import torch as T
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import tyro
-import stable_baselines3 as sb3
 
-from stable_baselines3.common.atari_wrappers import (
-    ClipRewardEnv,
-    EpisodicLifeEnv,
-    FireResetEnv,
-    MaxAndSkipEnv,
-    NoopResetEnv,
-)
 from stable_baselines3.common.buffers import ReplayBuffer
-from torch.distributions.categorical import Categorical
-from torch.utils.tensorboard import SummaryWriter
+    
+class QNetwork(nn.Module):
+    def __init__(self, n_state, n_action):
+        super(QNetwork, self).__init__()
+        self.n_state = n_state
+        self.n_action = n_action
+        self.fc1 = nn.Linear(n_state+n_action, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 1)
 
-@dataclass
-class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
-    seed: int = 1
-    """seed of the experiment"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
-    """the wandb's project name"""
-    wandb_entity: str = None
-    """the entity (team) of wandb's project"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
+    def forward(self, state, action):
+        s = state.reshape(-1, self.n_state)
+        a = action.reshape(-1, self.n_action)
+        x = T.cat((s, a), dim=-1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
 
-    # Algorithm specific arguments
-    env_id: str = "ALE/Freeway-v5"
-    """the id of the environment"""
-    total_timesteps: int = 5000000
-    """total timesteps of the experiments"""
-    buffer_size: int = int(1e6)
-    """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
-    gamma: float = 0.99
-    """the discount factor gamma"""
-    tau: float = 1.0
-    """target smoothing coefficient (default: 1)"""
-    batch_size: int = 64
-    """the batch size of sample from the reply memory"""
-    learning_starts: int = 2e4
-    """timestep to start learning"""
-    policy_lr: float = 3e-4
-    """the learning rate of the policy network optimizer"""
-    q_lr: float = 3e-4
-    """the learning rate of the Q network network optimizer"""
-    update_frequency: int = 4
-    """the frequency of training updates"""
-    target_network_frequency: int = 8000
-    """the frequency of updates for the target networks"""
-    alpha: float = 0.2
-    """Entropy regularization coefficient."""
-    autotune: bool = True
-    """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.89
-    """coefficient for scaling the autotune entropy target"""
+        return x
+    
+class ValueNetwork(nn.Module):
+    def __init__(self, n_state):
+        super(ValueNetwork, self).__init__()
+        self.fc1 = nn.Linear(n_state, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.fc3 = nn.Linear(256, 1)
 
+    def forward(self, state):
+        x = F.relu(self.fc1(state))
+        x = F.relu(self.fc2(x))
+        value = self.fc3(x)
 
-def make_env(env_id, seed, idx, capture_video, run_name):
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
+        return value
+    
+class PolicyNetwork(nn.Module):
+    def __init__(self, n_state, n_action, min_log_std=-20, max_log_std=2):
+        super(PolicyNetwork, self).__init__()
+        self.n_state = n_state
 
-        env = NoopResetEnv(env, noop_max=30)
-        env = MaxAndSkipEnv(env, skip=4)
-        env = EpisodicLifeEnv(env)
-        if "FIRE" in env.unwrapped.get_action_meanings():
-            env = FireResetEnv(env)
-        env = ClipRewardEnv(env)
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        # env = gym.wrappers.GrayScaleObservation(env)
-        env = gym.wrappers.FrameStackObservation(env, 4)
+        self.fc1 = nn.Linear(n_state, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.mu_head = nn.Linear(256, n_action)
+        self.log_std_head = nn.Linear(256, n_action)
 
-        env.action_space.seed(seed)
-        return env
+        self.max_log_std = max_log_std
+        self.min_log_std = min_log_std
 
-    return thunk
+    def forward(self, state):
+        x = F.relu(self.fc1(state))
+        x = F.relu(self.fc2(x))
+        mu = self.mu_head(x)
+        log_std_head = F.relu(self.log_std_head(x))
+        log_std_head = T.clamp(log_std_head, self.min_log_std, self.max_log_std)
 
-def layer_init(layer, bias_const = 0.0):
-    nn.init.kaiming_normal_(layer.weight)
-    T.nn.init.constant_(layer.bias, bias_const)
-    return layer
+        return mu, log_std_head
+    
+class SAC():
+    def __init__(self, env, state_dim, n_action, alpha=0.0003, gamma=0.99, capacity=10000, gradient_steps=1, batch_size=64, tau=0.005, device='cpu'):
+        super(SAC, self).__init__()
 
-class SoftQNetwork(nn.Module):
-    def __init__(self, envs):
-        super().__init__()
-        obs_shape = envs.single_observation_space.shape
-        self.conv = nn.Sequential(
-            layer_init(nn.Conv2d(obs_shape[0], 32, kernel_size=8, stride=4)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, kernel_size=4, stride=2)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1)),
-            nn.Flatten(),
+        self.policy = PolicyNetwork(state_dim, n_action).to(device)
+        self.value = ValueNetwork(state_dim).to(device)
+        self.target_value = ValueNetwork(state_dim).to(device)
+        self.q1 = QNetwork(state_dim, n_action).to(device)
+        self.q2 = QNetwork(state_dim, n_action).to(device)
+
+        self.policy_optim = optim.Adam(self.policy.parameters(), lr=alpha)
+        self.value_optim = optim.Adam(self.value.parameters(), lr=alpha)
+        self.q1_optim = optim.Adam(self.q1.parameters(), lr=alpha)
+        self.q2_optim = optim.Adam(self.q2.parameters(), lr=alpha)
+
+        self.gamma = gamma
+        self.device = device
+        self.n_action = n_action
+
+        self.replay_buffer = ReplayBuffer(capacity, env.observation_space, env.action_space, device=device, n_envs=1)
+
+        self.value_criterion = nn.MSELoss()
+        self.q1_criterion = nn.MSELoss()
+        self.q2_criterion = nn.MSELoss()
+
+        self.gradient_steps = gradient_steps
+        self.batch_size = batch_size
+        self.tau = tau
+        self.num_training = 1
+
+        for target_param, param in zip(self.target_value.parameters(), self.value.parameters()):
+            target_param.data.copy_(param.data)
+
+        os.makedirs('./model/', exist_ok=True)
+
+    def choose_action(self, state):
+        state = T.tensor(state, dtype=T.float).unsqueeze(0).to(self.device)
+        mu, log_std = self.policy(state)
+        std = T.exp(log_std)
+        dist = T.distributions.Normal(mu, std)
+        z = dist.sample()
+        action = T.tanh(z).detach().cpu().numpy().flatten()
+        return action
+    
+    def store_transition(self, obs, action, reward, next_obs, done):
+        obs = np.array(obs)
+        next_obs = np.array(next_obs)
+        action = np.array(action)
+        
+        self.replay_buffer.add(
+            obs,
+            next_obs,
+            action,
+            reward,
+            done,
+            [{}]
         )
 
-        with T.inference_mode():
-            output_dim = self.conv(T.zeros(1, *obs_shape)).shape[1]
+    def evaluate(self, state):
+        batch_mu, batch_std = self.policy(state)
+        batch_std = T.exp(batch_std)
+        dist = T.distributions.Normal(batch_mu, batch_std)
+        
+        z = T.distributions.Normal(0, 1).sample()
+        action = T.tanh(batch_mu + batch_std*z.to(self.device))
+        log_prob = dist.log_prob(batch_mu + batch_std*z.to(self.device)) - T.log(1 - action**2 + 1e-6)
 
-        self.fc1 = layer_init(nn.Linear(output_dim, 512))
-        self.fc_q = layer_init(nn.Linear(512, envs.single_action_space.n))
-
-    def forward(self, x):
-        x = F.relu(self.conv(x / 255.0))
-        x = F.relu(self.fc1(x))
-        q_vals = self.fc_q(x)
-        return q_vals
+        return action, log_prob
     
+    def update(self):
+        if self.num_training % 500 == 0:
+            print("Training .. {} times".format(self.num_training))
 
-class Actor(nn.Module):
-    def __init__(self, envs):
-        super().__init__()
-        obs_shape = envs.single_observation_space.shape
-        self.conv = nn.Sequential(
-            layer_init(nn.Conv2d(obs_shape[0], 32, kernel_size=8, stride=4)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, kernel_size=4, stride=2)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1)),
-            nn.Flatten(),
-        )
+        if self.replay_buffer.pos < self.batch_size:
+            return
+        
+        data = self.replay_buffer.sample(self.batch_size)
+        
+        states = data.observations
+        next_states = data.next_observations
+        actions = data.actions
+        rewards = data.rewards.reshape(-1, 1)
+        dones = data.dones.reshape(-1, 1)
+        
+        # Convert to tensors
+        if not isinstance(states, T.Tensor):
+            states = T.FloatTensor(states).to(self.device)
+            actions = T.FloatTensor(actions).reshape(-1, self.n_action).to(self.device)
+            rewards = T.FloatTensor(rewards).reshape(-1, 1).to(self.device)
+            next_states = T.FloatTensor(next_states).to(self.device)
+            dones = T.FloatTensor(dones).reshape(-1, 1).to(self.device)
 
-        with T.inference_mode():
-            output_dim = self.conv(T.zeros(1, *obs_shape)).shape[1]
+        for _ in range(self.gradient_steps):
+            with T.no_grad():
+                target_value = self.target_value(next_states)
+                q_next = rewards + self.gamma * (1 - dones) * target_value
 
-        self.fc1 = layer_init(nn.Linear(output_dim, 512))
-        self.fc_logits = layer_init(nn.Linear(512, envs.single_action_space.n))
+            expected_value = self.value(states)
+            expected_q1 = self.q1(states, actions)
+            expected_q2 = self.q2(states, actions)
 
-    def forward(self, x):
-        x = F.relu(self.conv(x))
-        x = F.relu(self.fc1(x))
-        logits = self.fc_logits(x)
+            q1_loss = self.q1_criterion(expected_q1, q_next.detach()).mean()
+            q2_loss = self.q2_criterion(expected_q2, q_next.detach()).mean()
 
-        return logits
+            self.q1_optim.zero_grad()
+            q1_loss.backward(retain_graph=True)
+            nn.utils.clip_grad_norm_(self.q1.parameters(), 0.5)
+            self.q1_optim.step()
 
-    def get_action(self, x):
-        logits = self(x / 255.0)
-        policy_dist = Categorical(logits=logits)
-        action = policy_dist.sample()
-        # Action probabilities for calculating the adapted soft-Q loss
-        action_probs = policy_dist.probs
-        log_prob = F.log_softmax(logits, dim=1)
-        return action, log_prob, action_probs
-    
-if __name__ == "__main__":
-    args = tyro.cli(Args)
+            self.q2_optim.zero_grad()
+            q2_loss.backward(retain_graph=True)
+            nn.utils.clip_grad_norm_(self.q2.parameters(), 0.5)
+            self.q2_optim.step()
 
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+            sample_action, log_prob = self.evaluate(states)
+            expected_new_q = T.min(self.q1(states, sample_action), self.q2(states, sample_action))
+            next_value = expected_new_q - log_prob
 
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
+            value_loss = self.value_criterion(expected_value, next_value.detach()).mean()
 
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    T.manual_seed(args.seed)
-    T.backends.cudnn.deterministic = args.torch_deterministic
+            self.value_optim.zero_grad()
+            value_loss.backward(retain_graph=True)
+            nn.utils.clip_grad_norm_(self.value.parameters(), 0.5)
+            self.value_optim.step()
 
-    device = T.device("cuda" if T.cuda.is_available() and args.cuda else "cpu")
+            pi_loss = (log_prob - expected_new_q).mean()
 
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+            self.policy_optim.zero_grad()
+            pi_loss.backward()
+            nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
+            self.policy_optim.step()
 
-    actor = Actor(envs).to(device)
-    qf1 = SoftQNetwork(envs).to(device)
-    qf2 = SoftQNetwork(envs).to(device)
-    qf1_target = SoftQNetwork(envs).to(device)
-    qf2_target = SoftQNetwork(envs).to(device)
-    qf1_target.load_state_dict(qf1.state_dict())
-    qf2_target.load_state_dict(qf2.state_dict())
+            for target_param, param in zip(self.target_value.parameters(), self.value.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
-    q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
+            self.num_training += 1
 
-    if args.autotune:
-        target_entropy = -args.target_entropy_scale * T.log(1 / T.tensor(envs.single_action_space.n))
-        log_alpha = T.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
-    else:
-        alpha = args.alpha
+    def save_model(self):
+        T.save(self.policy.state_dict(), './model/policy.pth')
+        T.save(self.value.state_dict(), './model/value.pth')
+        T.save(self.target_value.state_dict(), './model/target_value.pth')
+        T.save(self.q1.state_dict(), './model/q1.pth')
+        T.save(self.q2.state_dict(), './model/q2.pth')
+        print("Model saved ..")
 
-    rb = ReplayBuffer(
-        args.buffer_size,
-        envs.single_observation_space,
-        envs.single_action_space,
-        device,
-        handle_timeout_termination=False,
-    )
-
-    start_time = time.time()
-
-    obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
-        if global_step < args.learning_starts:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        else:
-            actions, _, _ = actor.get_action(T.Tensor(obs).to(device))
-            actions = actions.detach().cpu().numpy()
-
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                if "episode" not in info:
-                    continue
-                print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                break
-
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
-        # TRY NOT TO MODIFY: start the game
-    obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
-        # ALGO LOGIC: put action logic here
-        if global_step < args.learning_starts:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        else:
-            actions, _, _ = actor.get_action(T.Tensor(obs).to(device))
-            actions = actions.detach().cpu().numpy()
-
-        # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                # Skip the envs that are not done
-                if "episode" not in info:
-                    continue
-                print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                break
-
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        obs = next_obs
-
-        # ALGO LOGIC: training.
-        if global_step > args.learning_starts:
-            if global_step % args.update_frequency == 0:
-                data = rb.sample(args.batch_size)
-                # CRITIC training
-                with T.no_grad():
-                    _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
-                    qf1_next_target = qf1_target(data.next_observations)
-                    qf2_next_target = qf2_target(data.next_observations)
-                    # we can use the action probabilities instead of MC sampling to estimate the expectation
-                    min_qf_next_target = next_state_action_probs * (
-                        T.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
-                    )
-                    # adapt Q-target for discrete Q-function
-                    min_qf_next_target = min_qf_next_target.sum(dim=1)
-                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
-
-                # use Q-values only for the taken actions
-                qf1_values = qf1(data.observations)
-                qf2_values = qf2(data.observations)
-                qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
-                qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
-                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-                qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
-                qf_loss = qf1_loss + qf2_loss
-
-                q_optimizer.zero_grad()
-                qf_loss.backward()
-                q_optimizer.step()
-
-                # ACTOR training
-                _, log_pi, action_probs = actor.get_action(data.observations)
-                with T.no_grad():
-                    qf1_values = qf1(data.observations)
-                    qf2_values = qf2(data.observations)
-                    min_qf_values = T.min(qf1_values, qf2_values)
-                # no need for reparameterization, the expectation can be calculated for discrete actions
-                actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
-
-                actor_optimizer.zero_grad()
-                actor_loss.backward()
-                actor_optimizer.step()
-
-                if args.autotune:
-                    # re-use action probabilities for temperature loss
-                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
-
-                    a_optimizer.zero_grad()
-                    alpha_loss.backward()
-                    a_optimizer.step()
-                    alpha = log_alpha.exp().item()
-
-            # update the target networks
-            if global_step % args.target_network_frequency == 0:
-                for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
-                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
-                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-
-            if global_step % 100 == 0:
-                writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
-                writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                writer.add_scalar("losses/alpha", alpha, global_step)
-                print("SPS:", int(global_step / (time.time() - start_time)))
-                writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-                if args.autotune:
-                    writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
-
-    envs.close()
-    writer.close()
+    def load_model(self):
+        self.policy.load_state_dict(T.load('./model/policy.pth'))
+        self.value.load_state_dict(T.load('./model/value.pth'))
+        self.target_value.load_state_dict(T.load('./model/target_value.pth'))
+        self.q1.load_state_dict(T.load('./model/q1.pth'))
+        self.q2.load_state_dict(T.load('./model/q2.pth'))
+        print("Model loaded ..")
