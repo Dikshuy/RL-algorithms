@@ -1,4 +1,5 @@
 import numpy as np
+import random
 import gymnasium as gym
 from sac_discrete import DiscreteSAC
 import torch
@@ -8,8 +9,10 @@ from scipy import stats
 def train_sac(seed):
     env = gym.make('CartPole-v1')
     env.reset(seed=seed)
-    torch.manual_seed(seed)
+    random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
     
     n_action = env.action_space.n
     n_state = env.observation_space.shape[0]
@@ -23,16 +26,17 @@ def train_sac(seed):
     iterations = 100000
     log_interval = 2000
     
-    sac_agent = DiscreteSAC(env, n_state, n_action, alpha, gamma, capacity, gradient_steps, batch_size, tau, device)
+    sac_agent = DiscreteSAC(env, n_state, n_action, alpha, gamma, capacity, gradient_steps, batch_size, tau, device, target_entropy_scale=0.14)
     returns = []
     
     for i in range(iterations):
-        obs, _ = env.reset()
+        obs, _ = env.reset(seed=seed)
         done = False
         episode_reward = 0
         
         while not done:
-            action = sac_agent.choose_action(obs)
+            action, _, _ = sac_agent.choose_action(torch.Tensor(obs).to(device))
+            action = action.detach().cpu().numpy()
             next_state, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             sac_agent.store_transition(obs, action, reward, next_state, done)

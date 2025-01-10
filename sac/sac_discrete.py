@@ -6,6 +6,7 @@ import torch as T
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.distributions import Categorical
 
 from stable_baselines3.common.buffers import ReplayBuffer
     
@@ -38,7 +39,7 @@ class PolicyNetwork(nn.Module):
         return action_probs
     
 class DiscreteSAC():
-    def __init__(self, env, state_dim, n_action, alpha=0.0003, gamma=0.99, capacity=10000, gradient_steps=1, batch_size=64, tau=0.005, device='cpu', target_entropy_scale = 0.89, target_entropy=None):
+    def __init__(self, env, state_dim, n_action, alpha=0.0003, gamma=0.99, capacity=10000, gradient_steps=1, batch_size=64, tau=0.005, device='cpu', target_entropy_scale = 0.89):
         super(DiscreteSAC, self).__init__()
 
         self.policy = PolicyNetwork(state_dim, n_action).to(device)
@@ -53,8 +54,8 @@ class DiscreteSAC():
         self.policy_optim = optim.Adam(list(self.policy.parameters()), lr=alpha, eps=1e-4)
         self.q_optim = optim.Adam(list(self.q1.parameters()) + list(self.q2.parameters()), lr=alpha, eps=1e-4)
 
-        # entrop tuning
-        self.target_entropy = - target_entropy_scale * T.log(1/T.tensor(n_action))
+        # entropy tuning
+        self.target_entropy = -target_entropy_scale * T.log(1/T.tensor(n_action))
         self.log_alpha = T.zeros(1, requires_grad=True, device=device)
         self.alpha = self.log_alpha.exp().item()
         self.alpha_optim = optim.Adam([self.log_alpha], lr=alpha, eps=1e-4)
@@ -73,11 +74,13 @@ class DiscreteSAC():
         os.makedirs('./discrete_model/', exist_ok=True)
 
     def choose_action(self, state):
-        state = T.tensor(state, dtype=T.float).unsqueeze(0).to(self.device)
-        with T.no_grad():
-            action_probs = self.policy(state)
-            action = T.distributions.Categorical(action_probs).sample().item()
-        return action
+        action_probs = self.policy(state)
+        action_distribution = Categorical(action_probs)
+        action = action_distribution.sample().cpu()
+        z = action_probs == 0.0
+        z = z.float() * 1e-8
+        log_probs = T.log(action_probs + z)
+        return action, action_probs, log_probs
     
     def store_transition(self, obs, action, reward, next_obs, done):
         obs = np.array(obs)
@@ -118,44 +121,41 @@ class DiscreteSAC():
 
         for _ in range(self.gradient_steps):
             with T.no_grad():
-                next_action_probs = self.policy(next_states)
-                next_log_probs = T.log(next_action_probs + 1e-10)
-                next_q1 = self.target_q1(next_states)
-                next_q2= self.target_q2(next_states)
-                next_q = T.min(next_q1, next_q2)
+                _, next_action_probs, next_log_probs = self.choose_action(next_states)
+                next_q1_target = self.target_q1(next_states)
+                next_q2_target = self.target_q2(next_states)
+                next_q_target = T.min(next_q1_target, next_q2_target)
 
-                target_value = (next_action_probs * (next_q - self.alpha * next_log_probs)).sum(dim=1, keepdim=True)
-                target_q = rewards + self.gamma * (1 - dones) * target_value
+                min_q_next_target = (next_action_probs * (next_q_target - self.alpha * next_log_probs)).sum(dim=1).unsqueeze(-1)
+                next_q = rewards + self.gamma * (1 - dones) * (min_q_next_target)
 
-            current_q1 = self.q1(states).gather(1, actions)
-            current_q2 = self.q2(states).gather(1, actions)
+            current_q1 = self.q1(states).gather(1, actions.long())
+            current_q2 = self.q2(states).gather(1, actions.long())
 
-            q1_loss = F.mse_loss(current_q1, target_q.detach())
-            q2_loss = F.mse_loss(current_q2, target_q.detach())
+            q1_loss = F.mse_loss(current_q1, next_q)
+            q2_loss = F.mse_loss(current_q2, next_q)
             q_loss = q1_loss + q2_loss
-
-            # update single optim not q1 and q2
 
             self.q_optim.zero_grad()
             q_loss.backward(retain_graph=True)
             self.q_optim.step()
 
-            action_probs = self.policy(states)
-            log_probs = T.log(action_probs + 1e-10)
-            q_values = T.min(self.q1(states), self.q2(states))
+            _, action_probs, log_probs = self.choose_action(states)
 
-            policy_loss = (action_probs * (self.alpha * log_probs - q_values)).sum(dim=1).mean()
+            with T.no_grad():
+                min_q = T.min(self.q1(states), self.q2(states))
+
+            policy_loss = (action_probs * (self.alpha * log_probs - min_q)).sum(dim=1).mean()
 
             self.policy_optim.zero_grad()
             policy_loss.backward()
             self.policy_optim.step()
 
-            alpha_loss = -(self.log_alpha * (log_probs.detach() + self.target_entropy).mean())
-
+            alpha_loss = (action_probs.detach() * (-self.log_alpha.exp() * (log_probs + self.target_entropy).detach())).mean()
             self.alpha_optim.zero_grad()
             alpha_loss.backward()
             self.alpha_optim.step()
-            self.alpha = self.log_alpha.exp()
+            self.alpha = self.log_alpha.exp().item()
 
             for target_param, param in zip(self.q1.parameters(), self.target_q1.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
