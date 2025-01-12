@@ -1,5 +1,7 @@
 import os
 import numpy as np
+import random
+from collections import deque, namedtuple
 import gymnasium as gym
 
 import torch as T
@@ -7,7 +9,30 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from stable_baselines3.common.buffers import ReplayBuffer
+class ReplayBuffer:
+    def __init__(self, buffer_size, batch_size, device):
+        self.device = device
+        self.memory = deque(maxlen=buffer_size)  
+        self.batch_size = batch_size
+        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+    
+    def add(self, state, action, reward, next_state, done):
+        e = self.experience(state, action, reward, next_state, done)
+        self.memory.append(e)
+    
+    def sample(self):
+        experiences = random.sample(self.memory, k=self.batch_size)
+
+        states = T.from_numpy(np.stack([e.state for e in experiences if e is not None])).float().to(self.device)
+        actions = T.from_numpy(np.vstack([e.action for e in experiences if e is not None])).float().to(self.device)
+        rewards = T.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(self.device)
+        next_states = T.from_numpy(np.stack([e.next_state for e in experiences if e is not None])).float().to(self.device)
+        dones = T.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(self.device)
+  
+        return (states, actions, rewards, next_states, dones)
+
+    def __len__(self):
+        return len(self.memory)
     
 class QNetwork(nn.Module):
     def __init__(self, n_state, n_action):
@@ -68,6 +93,9 @@ class SAC():
     def __init__(self, env, state_dim, n_action, alpha=0.0003, gamma=0.99, capacity=10000, gradient_steps=1, batch_size=64, tau=0.005, device='cpu'):
         super(SAC, self).__init__()
 
+        self.max_action = env.action_space.high
+        self.min_action = env.action_space.low 
+
         self.policy = PolicyNetwork(state_dim, n_action).to(device)
         self.value = ValueNetwork(state_dim).to(device)
         self.target_value = ValueNetwork(state_dim).to(device)
@@ -83,7 +111,7 @@ class SAC():
         self.device = device
         self.n_action = n_action
 
-        self.replay_buffer = ReplayBuffer(capacity, env.observation_space, env.action_space, device=device, n_envs=1)
+        self.replay_buffer = ReplayBuffer(capacity, batch_size, device=device)
 
         self.value_criterion = nn.MSELoss()
         self.q1_criterion = nn.MSELoss()
@@ -105,56 +133,37 @@ class SAC():
         std = T.exp(log_std)
         dist = T.distributions.Normal(mu, std)
         z = dist.sample()
-        action = T.tanh(z).detach().cpu().numpy().flatten()
+        action = T.tanh(z).detach().cpu().numpy().flatten() * self.max_action
         return action
     
-    def store_transition(self, obs, action, reward, next_obs, done):
-        obs = np.array(obs)
-        next_obs = np.array(next_obs)
-        action = np.array(action)
-        
-        self.replay_buffer.add(
-            obs,
-            next_obs,
-            action,
-            reward,
-            done,
-            [{}]
-        )
+    def greedy_action(self, state):
+        state = T.tensor(state, dtype=T.float).unsqueeze(0).to(self.device)
+        mu, _ = self.policy(state)
+        action = T.tanh(mu).detach().cpu().numpy().flatten() * self.max_action
+        return action
+    
+    def store_transition(self, state, action, reward, next_state, done):
+        self.replay_buffer.add(state, action, reward,next_state, done)
 
     def evaluate(self, state):
         batch_mu, batch_std = self.policy(state)
         batch_std = T.exp(batch_std)
         dist = T.distributions.Normal(batch_mu, batch_std)
-        
-        z = T.distributions.Normal(0, 1).sample()
-        action = T.tanh(batch_mu + batch_std*z.to(self.device))
-        log_prob = dist.log_prob(batch_mu + batch_std*z.to(self.device)) - T.log(1 - action**2 + 1e-6)
+        self.action_scale = T.tensor((self.max_action - self.min_action) /2.0)
+        self.action_bias = T.tensor((self.max_action + self.min_action) /2.0)
+        x_t = dist.rsample()
+        y_t = T.tanh(x_t)
+        action = y_t * self.action_scale + self.action_bias
+        log_prob = dist.log_prob(x_t)
+        log_prob -= T.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
+        log_prob = log_prob.sum(1, keepdim=True)
+        mu = T.tanh(batch_mu) * self.action_scale + self.action_bias
 
-        return action, log_prob
+        return action, log_prob, mu
     
     def update(self):
-        if self.num_training % 500 == 0:
-            print("Training .. {} times".format(self.num_training))
-
-        if self.replay_buffer.pos < self.batch_size:
-            return
-        
-        data = self.replay_buffer.sample(self.batch_size)
-        
-        states = data.observations
-        next_states = data.next_observations
-        actions = data.actions
-        rewards = data.rewards.reshape(-1, 1)
-        dones = data.dones.reshape(-1, 1)
-        
-        # Convert to tensors
-        if not isinstance(states, T.Tensor):
-            states = T.FloatTensor(states).to(self.device)
-            actions = T.FloatTensor(actions).reshape(-1, self.n_action).to(self.device)
-            rewards = T.FloatTensor(rewards).reshape(-1, 1).to(self.device)
-            next_states = T.FloatTensor(next_states).to(self.device)
-            dones = T.FloatTensor(dones).reshape(-1, 1).to(self.device)
+        data = self.replay_buffer.sample()
+        states, actions, rewards, next_states, dones = data 
 
         for _ in range(self.gradient_steps):
             with T.no_grad():
@@ -178,7 +187,7 @@ class SAC():
             nn.utils.clip_grad_norm_(self.q2.parameters(), 0.5)
             self.q2_optim.step()
 
-            sample_action, log_prob = self.evaluate(states)
+            sample_action, log_prob, _ = self.evaluate(states)
             expected_new_q = T.min(self.q1(states, sample_action), self.q2(states, sample_action))
             next_value = expected_new_q - log_prob
 
