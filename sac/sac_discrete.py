@@ -170,9 +170,9 @@ class DiscreteSAC():
             self.alpha_optim.step()
             self.alpha = self.log_alpha.exp().item()
 
-            for target_param, param in zip(self.q1.parameters(), self.target_q1.parameters()):
+            for param, target_param in zip(self.q1.parameters(), self.target_q1.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-            for target_param, param in zip(self.q2.parameters(), self.target_q2.parameters()):
+            for param, target_param in zip(self.q2.parameters(), self.target_q2.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
             self.num_training += 1

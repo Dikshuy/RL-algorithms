@@ -53,10 +53,9 @@ def train_sac(seed):
     gradient_steps = 1
     batch_size = 256
     tau = 0.005
-    max_steps = 400000
-    log_interval = 100000
+    max_steps = 60000
+    log_interval = 10000
     eval_interval = 2000
-    update_every = 50
     target_entropy_scale = 0.6
     random_steps = 10000
 
@@ -89,16 +88,15 @@ def train_sac(seed):
             obs = next_state
             episode_reward += reward
             
-            if total_steps >= random_steps and total_steps % update_every == 0:
-                for _ in range(update_every):   
-                    agent.update()
+            if total_steps >= random_steps:
+                agent.update()
 
             if total_steps % eval_interval==0:
                 exp_return = evaluate_policy(eval_env, agent, device, turns=5)
                 if write:
                     writer.add_scalar('ep_r', exp_return, global_step=total_steps)
                     writer.add_scalar('alpha', agent.alpha, global_step=total_steps)
-                print('EnvName:', 'CartPole-v1', 'seed:', seed, 'steps: {}'.format(total_steps), 'score:', int(exp_return))
+                print('seed:', seed, '| steps: {}'.format(total_steps), '| reward:', int(exp_return))
 
             if save and total_steps % log_interval == 0:
                 agent.save_model()
@@ -142,7 +140,7 @@ def plot_returns(all_returns, seeds, window=100):
     plt.show()
 
 if __name__ == "__main__":
-    num_seeds = 5
+    num_seeds = 1
     seeds = [i for i in range(num_seeds)]
     all_returns = {}
     
