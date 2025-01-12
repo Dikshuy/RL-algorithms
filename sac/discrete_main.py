@@ -1,58 +1,114 @@
+import os, shutil
 import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
 import random
+from datetime import datetime
+
 import gymnasium as gym
 from sac_discrete import DiscreteSAC
 import torch
-import matplotlib.pyplot as plt
-from scipy import stats
+from torch.utils.tensorboard import SummaryWriter
+
+def evaluate_policy(env, agent: DiscreteSAC, device, turns = 3):
+	total_scores = 0
+	for _ in range(turns):
+		obs, _ = env.reset()
+		done = False
+		while not done:
+			action = agent.greedy_action(torch.Tensor(obs).to(device))
+			obs_next, reward, terminated, truncated, _ = env.step(action)
+			done = terminated or truncated
+
+			total_scores += reward
+			obs = obs_next
+               
+	return int(total_scores/turns)
 
 def train_sac(seed):
     env = gym.make('CartPole-v1')
-    env.reset(seed=seed)
+    eval_env = gym.make('CartPole-v1')
+
+    env_seed = seed
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
+
+    write = True
+
+    if write:
+        time_now = str(datetime.now())[0:-10]
+        time_now = ' ' + time_now[0:13] + '_' + time_now[-2::]
+        writepath = 'runs/SAC_cartpole' + time_now
+        if os.path.exists(writepath):   shutil.rmtree(writepath)
+        writer = SummaryWriter(log_dir=writepath)
     
     n_action = env.action_space.n
     n_state = env.observation_space.shape[0]
-    alpha = 0.0003
+    lr = 0.0003
     gamma = 0.99
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     capacity = 10000
     gradient_steps = 1
-    batch_size = 128
+    batch_size = 256
     tau = 0.005
-    iterations = 100000
-    log_interval = 2000
-    
-    sac_agent = DiscreteSAC(env, n_state, n_action, alpha, gamma, capacity, gradient_steps, batch_size, tau, device, target_entropy_scale=0.14)
+    iterations = 400000
+    log_interval = 100000
+    eval_interval = 2000
+    update_every = 50
+    target_entropy_scale = 0.6
+    random_steps = 10000
+
+    save = True
+    load = False
+    model_index = 5
+
+    if not os.path.exists('model'): os.mkdir('model')
+
+    agent = DiscreteSAC(env, n_state, n_action, lr, gamma, capacity, gradient_steps, batch_size, tau, device, target_entropy_scale)
+
+    if load: agent.load_model(model_index)
     returns = []
     
     for i in range(iterations):
-        obs, _ = env.reset(seed=seed)
+        obs, _ = env.reset(seed=env_seed)
+        env_seed += 1
         done = False
         episode_reward = 0
         
         while not done:
-            action, _, _ = sac_agent.choose_action(torch.Tensor(obs).to(device))
-            action = action.detach().cpu().numpy()
+            if i < random_steps:    action = env.action_space.sample()
+            else:   action, _, _ = agent.choose_action(torch.Tensor(obs).to(device))
+            if action is torch.Tensor:
+                action = action.detach().cpu().numpy()
             next_state, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
-            sac_agent.store_transition(obs, action, reward, next_state, done)
-            
-            if sac_agent.replay_buffer.pos >= sac_agent.batch_size:
-                sac_agent.update()
-                
+            agent.store_transition(obs, action, reward, next_state, done)
+
             obs = next_state
             episode_reward += reward
             
+            if i >= random_steps and i % update_every == 0:
+                for _ in range(update_every):   
+                    agent.update()
+
+            if i % eval_interval==0:
+                exp_return = evaluate_policy(eval_env, agent, device, turns=5)
+                if write:
+                    writer.add_scalar('ep_r', exp_return, global_step=i)
+                    writer.add_scalar('alpha', agent.alpha, global_step=i)
+                    # print('EnvName:', 'CartPole-v1', 'seed:', seed, 'steps: {}'.format(i), 'score:', int(exp_return))
+
+            if save and i % log_interval == 0:
+                agent.save_model()
+            
         returns.append(episode_reward)
-        
-        if i % log_interval == 0:
-            sac_agent.save_model()
             
         print(f"Seed {seed}, Episode {i}, Reward: {episode_reward}")
+
+    env.close()
+    eval_env.close()
             
     return returns
 

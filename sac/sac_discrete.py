@@ -50,7 +50,7 @@ class PolicyNetwork(nn.Module):
         return action_probs
     
 class DiscreteSAC():
-    def __init__(self, env, state_dim, n_action, alpha=0.0003, gamma=0.99, capacity=10000, gradient_steps=1, batch_size=64, tau=0.005, device='cpu', target_entropy_scale = 0.89):
+    def __init__(self, env, state_dim, n_action, lr=0.0003, gamma=0.99, capacity=10000, gradient_steps=1, batch_size=64, tau=0.005, device='cpu', target_entropy_scale = 0.89):
         super(DiscreteSAC, self).__init__()
 
         self.policy = PolicyNetwork(state_dim, n_action).to(device)
@@ -62,14 +62,14 @@ class DiscreteSAC():
         self.target_q1.load_state_dict(self.q1.state_dict())
         self.target_q2.load_state_dict(self.q2.state_dict())
 
-        self.policy_optim = optim.Adam(list(self.policy.parameters()), lr=alpha, eps=1e-4)
-        self.q_optim = optim.Adam(list(self.q1.parameters()) + list(self.q2.parameters()), lr=alpha, eps=1e-4)
+        self.policy_optim = optim.Adam(list(self.policy.parameters()), lr=lr, eps=1e-4)
+        self.q_optim = optim.Adam(list(self.q1.parameters()) + list(self.q2.parameters()), lr=lr, eps=1e-4)
 
         # entropy tuning
         self.target_entropy = -target_entropy_scale * T.log(1/T.tensor(n_action))
         self.log_alpha = T.zeros(1, requires_grad=True, device=device)
         self.alpha = self.log_alpha.exp().item()
-        self.alpha_optim = optim.Adam([self.log_alpha], lr=alpha, eps=1e-4)
+        self.alpha_optim = optim.Adam([self.log_alpha], lr=lr, eps=1e-4)
 
         self.gamma = gamma
         self.device = device
@@ -93,6 +93,11 @@ class DiscreteSAC():
         log_probs = T.log(action_probs + z)
         return action, action_probs, log_probs
     
+    def greedy_action(self, state):
+        action_probs = self.policy(state)
+        action = action_probs.argmax(-1).item()      
+        return action
+    
     def store_transition(self, obs, action, reward, next_obs, done):
         obs = np.array(obs)
         next_obs = np.array(next_obs)
@@ -108,11 +113,11 @@ class DiscreteSAC():
         )
     
     def update(self):
-        if self.num_training % 500 == 0:
-            print("Training .. {} times".format(self.num_training))
+        # if self.num_training % 500 == 0:
+        #     print("Training .. {} times".format(self.num_training))
 
-        if self.replay_buffer.pos < self.batch_size:
-            return
+        # if self.replay_buffer.pos < self.batch_size:
+        #     return
         
         data = self.replay_buffer.sample(self.batch_size)
         
