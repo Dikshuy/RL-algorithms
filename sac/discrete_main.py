@@ -49,7 +49,7 @@ def train_sac(seed):
     lr = 0.0003
     gamma = 0.99
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    capacity = 10000
+    capacity = 100000
     gradient_steps = 1
     batch_size = 256
     tau = 0.005
@@ -95,11 +95,10 @@ def train_sac(seed):
 
             if total_steps % eval_interval==0:
                 exp_return = evaluate_policy(eval_env, agent, device, turns=5)
-                print("expected return at time step:", total_steps, "is:", exp_return)
                 if write:
                     writer.add_scalar('ep_r', exp_return, global_step=total_steps)
                     writer.add_scalar('alpha', agent.alpha, global_step=total_steps)
-                    # print('EnvName:', 'CartPole-v1', 'seed:', seed, 'steps: {}'.format(i), 'score:', int(exp_return))
+                print('EnvName:', 'CartPole-v1', 'seed:', seed, 'steps: {}'.format(total_steps), 'score:', int(exp_return))
 
             if save and total_steps % log_interval == 0:
                 agent.save_model()
@@ -143,7 +142,7 @@ def plot_returns(all_returns, seeds, window=100):
     plt.show()
 
 if __name__ == "__main__":
-    num_seeds = 10
+    num_seeds = 5
     seeds = [i for i in range(num_seeds)]
     all_returns = {}
     

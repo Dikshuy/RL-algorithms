@@ -1,5 +1,7 @@
 import os
 import numpy as np
+import random
+from collections import deque, namedtuple
 import gymnasium as gym
 
 import torch as T
@@ -8,7 +10,30 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 
-from stable_baselines3.common.buffers import ReplayBuffer
+class ReplayBuffer:
+    def __init__(self, buffer_size, batch_size, device):
+        self.device = device
+        self.memory = deque(maxlen=buffer_size)  
+        self.batch_size = batch_size
+        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+    
+    def add(self, state, action, reward, next_state, done):
+        e = self.experience(state, action, reward, next_state, done)
+        self.memory.append(e)
+    
+    def sample(self):
+        experiences = random.sample(self.memory, k=self.batch_size)
+
+        states = T.from_numpy(np.stack([e.state for e in experiences if e is not None])).float().to(self.device)
+        actions = T.from_numpy(np.vstack([e.action for e in experiences if e is not None])).float().to(self.device)
+        rewards = T.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(self.device)
+        next_states = T.from_numpy(np.stack([e.next_state for e in experiences if e is not None])).float().to(self.device)
+        dones = T.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(self.device)
+  
+        return (states, actions, rewards, next_states, dones)
+
+    def __len__(self):
+        return len(self.memory)
 
 def hidden_init(layer):
     fan_in = layer.weight.data.size()[0]
@@ -41,11 +66,12 @@ class PolicyNetwork(nn.Module):
         self.fc1 = nn.Linear(n_state, 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc3 = nn.Linear(256, n_action)
+        self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, state):
         x = F.relu(self.fc1(state))
         x = F.relu(self.fc2(x))
-        action_probs = F.softmax(self.fc3(x), dim=-1)
+        action_probs = self.softmax(self.fc3(x))
 
         return action_probs
     
@@ -75,7 +101,7 @@ class DiscreteSAC():
         self.device = device
         self.n_action = n_action
 
-        self.replay_buffer = ReplayBuffer(capacity, env.observation_space, env.action_space, device=device, n_envs=1)
+        self.replay_buffer = ReplayBuffer(capacity, batch_size, device=device)
 
         self.gradient_steps = gradient_steps
         self.batch_size = batch_size
@@ -99,36 +125,12 @@ class DiscreteSAC():
         action = action_probs.argmax(-1).item()      
         return action
     
-    def store_transition(self, obs, action, reward, next_obs, done):
-        obs = np.array(obs)
-        next_obs = np.array(next_obs)
-        action = np.array(action)
-        
-        self.replay_buffer.add(
-            obs,
-            next_obs,
-            action,
-            reward,
-            done,
-            [{}]
-        )
+    def store_transition(self, state, action, reward, next_state, done):
+        self.replay_buffer.add(state, action, reward,next_state, done)
     
     def update(self):        
-        data = self.replay_buffer.sample(self.batch_size)
-        
-        states = data.observations
-        next_states = data.next_observations
-        actions = data.actions
-        rewards = data.rewards.reshape(-1, 1)
-        dones = data.dones.reshape(-1, 1)
-        
-        # Convert to tensors
-        if not isinstance(states, T.Tensor):
-            states = T.FloatTensor(states).to(self.device)
-            actions = T.FloatTensor(actions).reshape(-1, self.n_action).to(self.device)
-            rewards = T.FloatTensor(rewards).reshape(-1, 1).to(self.device)
-            next_states = T.FloatTensor(next_states).to(self.device)
-            dones = T.FloatTensor(dones).reshape(-1, 1).to(self.device)
+        data = self.replay_buffer.sample()
+        states, actions, rewards, next_states, dones = data 
 
         for _ in range(self.gradient_steps):
             with T.no_grad():
