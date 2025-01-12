@@ -91,6 +91,7 @@ class DiscreteSAC():
         z = action_probs == 0.0
         z = z.float() * 1e-8
         log_probs = T.log(action_probs + z)
+        action = action.detach().cpu().numpy()
         return action, action_probs, log_probs
     
     def greedy_action(self, state):
@@ -112,13 +113,7 @@ class DiscreteSAC():
             [{}]
         )
     
-    def update(self):
-        # if self.num_training % 500 == 0:
-        #     print("Training .. {} times".format(self.num_training))
-
-        # if self.replay_buffer.pos < self.batch_size:
-        #     return
-        
+    def update(self):        
         data = self.replay_buffer.sample(self.batch_size)
         
         states = data.observations
