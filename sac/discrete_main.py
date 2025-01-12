@@ -110,42 +110,9 @@ def train_sac(seed):
             
     return returns
 
-def plot_returns(all_returns, seeds, window=100):
-    plt.figure(figsize=(10, 6))
-
-    returns_array = np.array([all_returns[seed] for seed in seeds])
-    mean_returns = np.mean(returns_array, axis=0)
-
-    n = len(seeds)
-    std_error = stats.sem(returns_array, axis=0)
-    ci_95 = std_error * stats.t.ppf((1 + 0.95) / 2, n-1)
-    
-    smoothed_mean = np.convolve(mean_returns, np.ones(window)/window, mode='valid')
-    smoothed_ci = np.convolve(ci_95, np.ones(window)/window, mode='valid')
-    episodes = range(len(smoothed_mean))
-    
-    plt.plot(episodes, smoothed_mean, 'b-', label='Mean', linewidth=2)
-    plt.fill_between(episodes, 
-                     smoothed_mean - smoothed_ci, 
-                     smoothed_mean + smoothed_ci, 
-                     alpha=0.2, color='b',
-                     label='95% CI')
-    
-    plt.xlabel('Episode')
-    plt.ylabel('Return')
-    plt.title('returns for cartpole using SAC')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig('discrete_sac_returns.png')
-    plt.show()
-
 if __name__ == "__main__":
     num_seeds = 1
     seeds = [i for i in range(num_seeds)]
-    all_returns = {}
-    
+
     for seed in seeds:
         returns = train_sac(seed)
-        all_returns[seed] = returns
-        
-    plot_returns(all_returns, seeds)
