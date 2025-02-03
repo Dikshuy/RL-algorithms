@@ -1,8 +1,10 @@
 # RL-algorithms
 
-# Proximal Policy Optimization (PPO)
+# Deep Q-Network (DQN)
 
-## Overview 
+[DQN](https://www.nature.com/articles/nature14236) algorithm uses a neural network to approximate the Q-value function, which is used to determine the optimal action to take in a given state.
+
+# Proximal Policy Optimization (PPO)
 
 [PPO](https://arxiv.org/abs/1707.06347) is a model-free on-policy RL algorithm that works well for both discrete and continuous action space environments. PPO utilizes an actor-critic framework, where there are two networks, an actor (policy network) and critic network (value function). 
 
@@ -36,4 +38,3 @@ Conceptually, this is like saying, "I have an idea of how to play this well, I'm
 Second, it uses Experience Replay.
 
 We store list of tuples (state, action, reward, next_state), and instead of learning only from recent experience, we learn from sampling all of our experience accumulated so far.
-
