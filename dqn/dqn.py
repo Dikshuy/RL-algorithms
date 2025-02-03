@@ -88,6 +88,7 @@ class DQN:
         next_states = torch.from_numpy(np.vstack(next_states)).float().to(self.device)
         dones = torch.from_numpy(np.vstack(dones).astype(np.uint8)).float().to(self.device)
 
+        # updates for dqn
         q = self.eval_net(states).gather(1, actions)
         q_next = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
         q_target = rewards + gamma * q_next * (1 - dones)

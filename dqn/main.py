@@ -4,9 +4,10 @@ import gym
 import torch
 import random
 from dqn import DQN
+from ddqn import DDQN
 
 
-def evaluate_policy(env, agent: DQN, turns = 3):
+def evaluate_policy(env, agent, turns = 3):
 	total_scores = 0
 	for _ in range(turns):
 		obs, _ = env.reset()
@@ -48,6 +49,7 @@ def train_dqn(seed):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     agent = DQN(state_dim, action_dim, buffer_size, batch_size, lr, gamma, tau, device)
+    # agent = DDQN(state_dim, action_dim, buffer_size, batch_size, lr, gamma, tau, device)
 
     returns = []
 
