@@ -3,7 +3,7 @@ import random
 from plot import *
 import argparse
 
-import gym
+import gymnasium as gym
 import torch
 from dqn import DQN
 from ddqn import DDQN
