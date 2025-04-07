@@ -1,28 +1,27 @@
 import numpy as np
-from collections import deque
+import random
+from plot import *
+
 import gym
 import torch
-import random
 from dqn import DQN
 from ddqn import DDQN
 
 
-def evaluate_policy(env, agent, turns = 3):
+def evaluate_policy(env, agent, eval_episodes=5):
 	total_scores = 0
-	for _ in range(turns):
+	for _ in range(eval_episodes):
 		obs, _ = env.reset()
 		done = False
 		while not done:
 			action = agent.choose_action(obs, epsilon=0.0)
 			obs_next, reward, terminated, truncated, _ = env.step(action)
 			done = terminated or truncated
-
 			total_scores += reward
-			obs = obs_next
-               
-	return int(total_scores/turns)
+			obs = obs_next     
+	return total_scores/eval_episodes
 
-def train_dqn(seed):
+def train_dqn(seed, eval_interval=100):
     env = gym.make('CartPole-v1')
     env_eval = gym.make('CartPole-v1')
 
@@ -40,19 +39,17 @@ def train_dqn(seed):
     gamma = 0.99
     tau = 1e-3
     eps_start = 1.0
-    eps_end = 0.1
+    eps_end = 0.001
     eps_decay_rate = 0.99
-    num_episodes = 500
-    eval_interval = 100
-    buffer = deque(maxlen=buffer_size)
+    num_episodes = 2000
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     agent = DQN(state_dim, action_dim, buffer_size, batch_size, lr, gamma, tau, device)
     # agent = DDQN(state_dim, action_dim, buffer_size, batch_size, lr, gamma, tau, device)
 
-    returns = []
-
+    eval_returns = []
+    episode_returns = []
     total_steps = 0
 
     for i in range(num_episodes):
@@ -68,31 +65,41 @@ def train_dqn(seed):
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             
-            buffer.append((obs, action, reward, next_obs, done))
+            agent.memory.add(obs, action, reward, next_obs, terminated)
             
             obs = next_obs
             episodic_reward += reward
+            total_steps += 1
             
-            if len(buffer) >= batch_size:
-                experiences = random.sample(buffer, batch_size)
-                agent.learn(experiences, gamma)
+            if len(agent.memory) >= batch_size:
+                experiences = agent.memory.sample()
+                agent.learn(experiences)
 
             if total_steps % eval_interval == 0:
                 eval_reward = evaluate_policy(env_eval, agent)
-                print(f"Step: {total_steps}, Eval reward: {eval_reward}")
+                eval_returns.append(eval_reward)
+                # print(f"Evaluation at step {total_steps}: {eval_reward}")
 
-            total_steps += 1
-
-        returns.append(episodic_reward)
+        episode_returns.append(episodic_reward)
+        print(f"Episode {i+1}/{num_episodes}, Reward: {episodic_reward}")
 
     env.close()
     env_eval.close()
 
-    return returns
+    return episode_returns, eval_returns
 
 if __name__ == "__main__":
-    num_seeds = 2
+    num_seeds = 5               # number of seeds
+    eval_interval = 100         # evaluation every 100 steps
     seeds = [i for i in range(num_seeds)]
+    all_episode_returns = []
+    all_eval_returns = []
     
     for seed in seeds:
-        returns = train_dqn(seed)
+        print(f"seed: {seed}")
+        episode_returns, eval_returns = train_dqn(seed, eval_interval)
+        all_episode_returns.append(episode_returns)
+        all_eval_returns.append(eval_returns)
+
+    plot_episode_returns(all_episode_returns)
+    plot_eval_returns(all_eval_returns, eval_interval)
