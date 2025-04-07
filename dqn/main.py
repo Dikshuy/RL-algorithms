@@ -6,6 +6,7 @@ import gym
 import torch
 from dqn import DQN
 from ddqn import DDQN
+from d3qn import D3QN
 
 
 def evaluate_policy(env, agent, eval_episodes=5):
@@ -31,22 +32,25 @@ def train_dqn(seed, eval_interval=100):
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
 
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.n
-    buffer_size = 10000
-    batch_size = 128
-    lr = 3e-4
-    gamma = 0.99
-    tau = 1e-3
-    eps_start = 1.0
-    eps_end = 0.001
-    eps_decay_rate = 0.99
-    num_episodes = 2000
+    state_dim = env.observation_space.shape[0]      # state dimension
+    action_dim = env.action_space.n                 # action dimension  
+    buffer_size = 10000                             # replay buffer size
+    batch_size = 128                                # batch size
+    lr = 3e-4                                       # learning rate
+    optimizer_eps = 1e-5                            # optimizer epsilon
+    gamma = 0.99                                    # discount factor
+    n_step = 1                                      # n-step return
+    tau = 1e-3                                      # soft update parameter
+    eps_start = 1.0                                 # initial epsilon
+    eps_end = 0.001                                 # final epsilon
+    eps_decay_rate = 0.99                           # decay rate
+    num_episodes = 1000                             # number of episodes
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    agent = DQN(state_dim, action_dim, buffer_size, batch_size, lr, gamma, tau, device)
-    # agent = DDQN(state_dim, action_dim, buffer_size, batch_size, lr, gamma, tau, device)
+    agent = DQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
+    # agent = DDQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
+    # agent = D3QN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
 
     eval_returns = []
     episode_returns = []
