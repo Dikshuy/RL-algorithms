@@ -22,7 +22,7 @@ class ReplayBuffer:
         experiences = random.sample(self.memory, k=self.batch_size)
 
         states = torch.from_numpy(np.stack([e.state for e in experiences if e is not None])).float().to(self.device)
-        actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).float().to(self.device)
+        actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).long().to(self.device)
         rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(self.device)
         next_states = torch.from_numpy(np.stack([e.next_state for e in experiences if e is not None])).float().to(self.device)
         dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(self.device)
@@ -48,17 +48,16 @@ class QNet(nn.Module):
 
 class DDQN:
     def __init__(self, state_dim, action_dim, buffer_size, batch_size, lr, gamma, tau, device):
-        super(DDQN, self).__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.eval_net, self.target_net = QNet(state_dim, action_dim, device).to(device), QNet(state_dim, action_dim, device).to(device)
+        self.eval_net = QNet(state_dim, action_dim, device).to(device)
+        self.target_net =  QNet(state_dim, action_dim, device).to(device)
 
         self.memory = ReplayBuffer(buffer_size, batch_size, device)
         self.memory_counter = 0
         self.batch_size = batch_size
         self.gamma = gamma
         self.tau = tau
-
         self.device = device
 
         self.optimizer = optim.Adam(self.eval_net.parameters(), lr=lr)
@@ -79,20 +78,14 @@ class DDQN:
         
         return action
 
-    def learn(self, experiences, gamma):
-        states, actions, rewards, next_states, dones = zip(*experiences)
-
-        states = torch.from_numpy(np.vstack(states)).float().to(self.device)
-        actions = torch.from_numpy(np.vstack(actions)).long().to(self.device)
-        rewards = torch.from_numpy(np.vstack(rewards)).float().to(self.device)
-        next_states = torch.from_numpy(np.vstack(next_states)).float().to(self.device)
-        dones = torch.from_numpy(np.vstack(dones).astype(np.uint8)).float().to(self.device)
+    def learn(self, experiences):
+        states, actions, rewards, next_states, dones = experiences
 
         # updates for double dqn
         q = self.eval_net(states).gather(1, actions)
         max_action_indices = self.eval_net(next_states).argmax(1).unsqueeze(1)
         q_next = self.target_net(next_states).gather(1, max_action_indices)
-        q_target = rewards + gamma * q_next * (1 - dones)
+        q_target = rewards + self.gamma * q_next * (1 - dones)
 
         loss = self.loss_func(q, q_target)
         self.optimizer.zero_grad()
