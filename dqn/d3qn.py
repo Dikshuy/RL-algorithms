@@ -6,27 +6,35 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from typeguard import value
     
-class QNet(nn.Module):
+class DuelingQNet(nn.Module):
     def __init__(self, n_state, n_action, device):
-        super(QNet, self).__init__()
+        super(DuelingQNet, self).__init__()
         self.fc1 = nn.Linear(n_state, 128)
         self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, n_action)
+
+        self.value_fc = nn.Linear(128, 1)
+        self.advantage_fc = nn.Linear(128, n_action)
+
         self.to(device)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        action_value = self.fc3(x)
+        value = self.value_fc(x)
+        advantage = self.advantage_fc(x)
+        
+        # Dueling architecture: Q(s,a) = V(s) + A(s,a) - 1/|A| * sum(A(s,a))
+        action_value = value + advantage - advantage.mean(dim=1, keepdim=True)
         return action_value
 
-class DQN:
+class D3QN:
     def __init__(self, state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device):
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.eval_net = QNet(state_dim, action_dim, device).to(device)
-        self.target_net =  QNet(state_dim, action_dim, device).to(device)
+        self.eval_net = DuelingQNet(state_dim, action_dim, device).to(device)
+        self.target_net =  DuelingQNet(state_dim, action_dim, device).to(device)
         self.target_net.load_state_dict(self.eval_net.state_dict())
 
         self.memory = ReplayBuffer(buffer_size, batch_size, n_step, gamma, device)
@@ -56,9 +64,10 @@ class DQN:
     def learn(self, experiences):
         states, actions, rewards, next_states, dones = experiences
 
-        # updates for dqn
+        # updates for dueling double dqn
         q = self.eval_net(states).gather(1, actions)
-        q_next = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
+        max_action_indices = self.eval_net(next_states).argmax(1).unsqueeze(1)
+        q_next = self.target_net(next_states).gather(1, max_action_indices)
         q_target = rewards + self.gamma * q_next * (1 - dones)
 
         loss = self.loss_func(q, q_target)

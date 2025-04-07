@@ -27,6 +27,7 @@ class DDQN:
         self.action_dim = action_dim
         self.eval_net = QNet(state_dim, action_dim, device).to(device)
         self.target_net =  QNet(state_dim, action_dim, device).to(device)
+        self.target_net.load_state_dict(self.eval_net.state_dict())
 
         self.memory = ReplayBuffer(buffer_size, batch_size, n_step, gamma, device)
         self.batch_size = batch_size
