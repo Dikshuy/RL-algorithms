@@ -1,6 +1,7 @@
 import numpy as np
 import random
 from plot import *
+import argparse
 
 import gym
 import torch
@@ -9,7 +10,7 @@ from ddqn import DDQN
 from d3qn import D3QN
 
 
-def evaluate_policy(env, agent, eval_episodes=5):
+def evaluate_policy(env, agent, eval_episodes=3):
 	total_scores = 0
 	for _ in range(eval_episodes):
 		obs, _ = env.reset()
@@ -22,7 +23,7 @@ def evaluate_policy(env, agent, eval_episodes=5):
 			obs = obs_next     
 	return total_scores/eval_episodes
 
-def train_dqn(seed, eval_interval=100):
+def train_dqn(agent_type, seed, eval_interval=500):
     env = gym.make('CartPole-v1')
     env_eval = gym.make('CartPole-v1')
 
@@ -48,9 +49,12 @@ def train_dqn(seed, eval_interval=100):
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    agent = DQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
-    # agent = DDQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
-    # agent = D3QN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
+    if agent_type == 'dqn':
+        agent = DQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
+    elif agent_type == 'ddqn':
+        agent = DDQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
+    elif agent_type == 'd3qn':
+        agent = D3QN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
 
     eval_returns = []
     episode_returns = []
@@ -93,17 +97,23 @@ def train_dqn(seed, eval_interval=100):
     return episode_returns, eval_returns
 
 if __name__ == "__main__":
-    num_seeds = 5               # number of seeds
-    eval_interval = 100         # evaluation every 100 steps
-    seeds = [i for i in range(num_seeds)]
+    parser = argparse.ArgumentParser(description='Train RL agents on CartPole')
+    parser.add_argument('--agent', type=str, default='dqn', choices=['dqn', 'ddqn', 'd3qn'], help='Agent type: dqn, ddqn, or d3qn')
+    parser.add_argument('--seeds', type=int, default=5, help='Number of seeds to run')
+    parser.add_argument('--eval_interval', type=int, default=500, help='Evaluation interval in steps')
+
+    args = parser.parse_args()
+
+    seeds = [i for i in range(args.seeds)]
+    
     all_episode_returns = []
     all_eval_returns = []
     
     for seed in seeds:
         print(f"seed: {seed}")
-        episode_returns, eval_returns = train_dqn(seed, eval_interval)
+        episode_returns, eval_returns = train_dqn(args.agent, seed, args.eval_interval)
         all_episode_returns.append(episode_returns)
         all_eval_returns.append(eval_returns)
 
-    plot_episode_returns(all_episode_returns)
-    plot_eval_returns(all_eval_returns, eval_interval)
+    plot_episode_returns(all_episode_returns, args.agent)
+    # plot_eval_returns(all_eval_returns, args.agent, args.eval_interval)

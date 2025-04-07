@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-def plot_episode_returns(all_returns):
+def plot_episode_returns(all_returns, agent_type):
     plt.figure(figsize=(12, 8))
     
     min_length = min(len(returns) for returns in all_returns)
@@ -18,15 +18,15 @@ def plot_episode_returns(all_returns):
     
     plt.xlabel("Episodes", fontsize=14)
     plt.ylabel("Returns", fontsize=14)
-    plt.title("Episodic Returns across Multiple Seeds", fontsize=16)
+    plt.title(f"{agent_type} agent episodic returns", fontsize=16)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.savefig("training_episode_returns.png", dpi=300)
+    plt.savefig(f"{agent_type}_agent_returns.png", dpi=300)
 
     return
 
-def plot_eval_returns(all_returns, eval_interval):
+def plot_eval_returns(all_returns, agent_type, eval_interval):
     plt.figure(figsize=(12, 8))
 
     min_length = min(len(returns) for returns in all_returns)
@@ -43,10 +43,10 @@ def plot_eval_returns(all_returns, eval_interval):
     
     plt.xlabel("Training Steps", fontsize=14)
     plt.ylabel("Evaluation Returns", fontsize=14)
-    plt.title("Training Performance across Multiple Seeds", fontsize=16)
+    plt.title(f"{agent_type} agent training performance", fontsize=16)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.savefig("eval_returns.png", dpi=300)
+    plt.savefig(f"{agent_type}_agent_eval_returns.png", dpi=300)
     
     return plt
