@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from typeguard import value
     
 class DuelingQNet(nn.Module):
     def __init__(self, n_state, n_action, device):
