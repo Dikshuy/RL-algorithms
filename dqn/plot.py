@@ -1,9 +1,16 @@
+import os
+from unittest import result
 import numpy as np
 import matplotlib.pyplot as plt
 
+def ensure_result_directory(agent_type):
+    result_dir = f"results/{agent_type}"
+    os.makedirs(result_dir, exist_ok=True)
+    return result_dir
+
 def plot_episode_returns(all_returns, agent_type):
+    result_dir = ensure_result_directory(agent_type)
     plt.figure(figsize=(12, 8))
-    
     min_length = min(len(returns) for returns in all_returns)
     all_returns = [returns[:min_length] for returns in all_returns]
     returns_array = np.array(all_returns)
@@ -22,13 +29,16 @@ def plot_episode_returns(all_returns, agent_type):
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{agent_type}_agent_returns.png", dpi=300)
+
+    save_path = os.path.join(result_dir, f"{agent_type}_agent_returns.png")
+    plt.savefig(save_path, dpi=300)
+    plt.close()
 
     return
 
 def plot_eval_returns(all_returns, agent_type, eval_interval):
+    result_dir = ensure_result_directory(agent_type)
     plt.figure(figsize=(12, 8))
-
     min_length = min(len(returns) for returns in all_returns)
     all_returns = [returns[:min_length] for returns in all_returns]
     returns_array = np.array(all_returns)
@@ -47,6 +57,9 @@ def plot_eval_returns(all_returns, agent_type, eval_interval):
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{agent_type}_agent_eval_returns.png", dpi=300)
+
+    save_path = os.path.join(result_dir, f"{agent_type}_agent_eval_returns.png")
+    plt.savefig(save_path, dpi=300)
+    plt.close()
     
     return plt

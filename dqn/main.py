@@ -35,13 +35,13 @@ def train_dqn(agent_type, seed, eval_interval=500):
 
     state_dim = env.observation_space.shape[0]      # state dimension
     action_dim = env.action_space.n                 # action dimension  
-    buffer_size = 10000                             # replay buffer size
+    buffer_size = 25000                             # replay buffer size
     batch_size = 128                                # batch size
     lr = 3e-4                                       # learning rate
     optimizer_eps = 1e-5                            # optimizer epsilon
     gamma = 0.99                                    # discount factor
     n_step = 1                                      # n-step return
-    tau = 1e-3                                      # soft update parameter
+    tau = 5e-3                                      # soft update parameter
     eps_start = 1.0                                 # initial epsilon
     eps_end = 0.001                                 # final epsilon
     eps_decay_rate = 0.99                           # decay rate
