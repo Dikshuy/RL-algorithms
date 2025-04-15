@@ -105,16 +105,20 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    seeds = [i for i in range(args.seeds)]
+    seed_list = list(range(args.seeds))
+    
+    for seed in seed_list:
+        print(f"Training with seed: {seed}")
+        episode_returns, eval_returns = train_dqn(args.agent, seed, args.eval_interval)
+        save_seed_data(episode_returns, eval_returns, args.agent, seed)
     
     all_episode_returns = []
     all_eval_returns = []
     
-    for seed in seeds:
-        print(f"seed: {seed}")
-        episode_returns, eval_returns = train_dqn(args.agent, seed, args.eval_interval)
-        all_episode_returns.append(episode_returns)
-        all_eval_returns.append(eval_returns)
-
+    for seed in seed_list:
+        seed_data = load_seed_data(args.agent, seed)
+        all_episode_returns.append(seed_data["episode_returns"])
+        all_eval_returns.append(seed_data["eval_returns"])
+    
     plot_episode_returns(all_episode_returns, args.agent)
-    # plot_eval_returns(all_eval_returns, args.agent, args.eval_interval)
+    plot_eval_returns(all_eval_returns, args.agent, args.eval_interval)
