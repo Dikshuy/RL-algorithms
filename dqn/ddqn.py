@@ -22,7 +22,7 @@ class QNet(nn.Module):
         return action_value
 
 class DDQN:
-    def __init__(self, state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device):
+    def __init__(self, state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, target_update_freq, device):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.eval_net = QNet(state_dim, action_dim, device).to(device)
@@ -33,6 +33,8 @@ class DDQN:
         self.batch_size = batch_size
         self.gamma = gamma ** n_step
         self.tau = tau
+        self.target_update_freq = target_update_freq
+        self.update_counter = 0
         self.device = device
 
         self.optimizer = optim.Adam(self.eval_net.parameters(), lr=lr, eps=optimizer_eps)
@@ -67,8 +69,14 @@ class DDQN:
         loss.backward()
         self.optimizer.step()
 
-        for target_param, param in zip(self.target_net.parameters(), self.eval_net.parameters()):
-            target_param.data.copy_(target_param.data * (1-self.tau) + param.data * self.tau)
+        # hard update - traditionally dqn performs hard updates
+        self.update_counter += 1
+        if self.update_counter % self.target_update_freq == 0:
+            self.target_net.load_state_dict(self.eval_net.state_dict())
+
+        # soft update - slowly changing target network alternative
+        # for target_param, param in zip(self.target_net.parameters(), self.eval_net.parameters()):
+        #     target_param.data.copy_(target_param.data * (1-self.tau) + param.data * self.tau)
 
 # replay buffer for n-step return
 class ReplayBuffer:
