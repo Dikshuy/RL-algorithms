@@ -19,7 +19,7 @@ def plot_episode_returns(all_returns, agent_type):
     episodes = np.arange(1, min_length + 1)
     
     for i, seed_returns in enumerate(all_returns):
-        plt.plot(episodes, seed_returns[:min_length], color='red', alpha=0.3)
+        plt.plot(episodes, seed_returns[:min_length], color='red', alpha=0.1)
     
     plt.plot(episodes, mean_returns, color='red', label="Mean Returns")
     
@@ -47,7 +47,7 @@ def plot_eval_returns(all_returns, agent_type, eval_interval):
     steps = np.arange(1, len(mean_returns) + 1) * eval_interval
     
     for i, seed_returns in enumerate(all_returns):
-        plt.plot(steps, seed_returns, color='red', alpha=0.3)
+        plt.plot(steps, seed_returns, color='red', alpha=0.1)
     
     plt.plot(steps, mean_returns, color='red', label="Mean Returns")
     
