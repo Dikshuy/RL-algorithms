@@ -37,11 +37,12 @@ def train_dqn(agent_type, seed, eval_interval=500):
     action_dim = env.action_space.n                 # action dimension  
     buffer_size = 25000                             # replay buffer size
     batch_size = 128                                # batch size
-    lr = 3e-4                                       # learning rate
+    lr = 1e-4                                       # learning rate
     optimizer_eps = 1e-5                            # optimizer epsilon
     gamma = 0.99                                    # discount factor
     n_step = 1                                      # n-step return
-    tau = 5e-3                                      # soft update parameter
+    tau = 5e-3                                      # soft update parameter (soft update)
+    target_update_freq = 100                        # target network update frequency (hard update)
     eps_start = 1.0                                 # initial epsilon
     eps_end = 0.001                                 # final epsilon
     eps_decay_rate = 0.99                           # decay rate
@@ -50,11 +51,11 @@ def train_dqn(agent_type, seed, eval_interval=500):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     if agent_type == 'dqn':
-        agent = DQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
+        agent = DQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, target_update_freq, device)
     elif agent_type == 'ddqn':
-        agent = DDQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
+        agent = DDQN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, target_update_freq, device)
     elif agent_type == 'd3qn':
-        agent = D3QN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, device)
+        agent = D3QN(state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, target_update_freq, device)
 
     eval_returns = []
     episode_returns = []
