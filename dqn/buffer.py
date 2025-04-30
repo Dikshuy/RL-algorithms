@@ -2,7 +2,12 @@ from collections import namedtuple, deque
 import torch
 import numpy as np
 
-# replay buffer 
+# batch types for different buffer types
+OneStepBatch = namedtuple("OneStepBatch", ["observations", "actions", "rewards", "next_observations", "dones"])
+NStepBatch = namedtuple("NStepBatch", ["observations", "actions", "rewards", "next_observations", "dones"])
+PrioritizedBatch = namedtuple("PrioritizedBatch", ["observations", "actions", "rewards", "next_observations", "dones", "indices", "weights"])
+
+# standard replay buffer 
 class ReplayBuffer:
     def __init__(self, capacity, obs_shape, device, batch_size, gamma=0.99):
         self.device = device
@@ -31,25 +36,26 @@ class ReplayBuffer:
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
-    def sample(self):
-        indices = np.random.randint(0, self.size, size=self.batch_size)
+    def sample(self, batch_size=None):
+        if batch_size is None:
+            batch_size = self.batch_size
 
-        samples = {
-            "observations": torch.from_numpy(self.buffer_obs[indices]).to(self.device),
-            "actions": torch.from_numpy(self.buffer_actions[indices]).to(self.device).unsqueeze(1),
-            "rewards": torch.from_numpy(self.buffer_rewards[indices]).to(self.device).unsqueeze(1),
-            "next_observations": torch.from_numpy(self.buffer_next_obs[indices]).to(self.device),
-            "dones": torch.from_numpy(self.buffer_dones[indices]).to(self.device).unsqueeze(1),
-        }
+        indices = np.random.randint(0, self.size, size=batch_size)
 
-        return OneStepBatch(**samples)
+        obs = torch.from_numpy(self.buffer_obs[indices]).to(self.device)
+        actions = torch.from_numpy(self.buffer_actions[indices]).to(self.device).unsqueeze(1)
+        rewards = torch.from_numpy(self.buffer_rewards[indices]).to(self.device).unsqueeze(1)
+        next_obs = torch.from_numpy(self.buffer_next_obs[indices]).to(self.device)
+        dones = torch.from_numpy(self.buffer_dones[indices]).to(self.device).unsqueeze(1)
+
+        return OneStepBatch(obs, actions, rewards, next_obs, dones)
     
     def __len__(self):
         return self.size
 
 # replay buffer for n-step return
 class NStepReplayBuffer:
-    def __init__(self, capacity, obs_shape, device, batch_size, n_step=1, gamma=0.99):
+    def __init__(self, capacity, obs_shape, device, batch_size, n_step=3, gamma=0.99):
         self.device = device
         self.capacity = capacity
         self.obs_shape = obs_shape
@@ -86,11 +92,7 @@ class NStepReplayBuffer:
         if len(self.n_step_buffer) < self.n_step and not done:   
             return
         
-        if self.n_step > 1:
-            reward, next_obs, done = self._get_n_step_info()
-        else:
-            reward, next_obs, done = self.n_step_buffer[-1][2], self.n_step_buffer[-1][3], self.n_step_buffer[-1][4]
-
+        reward, next_obs, done = self._get_n_step_info()
         obs = self.n_step_buffer[0][0]
         action = self.n_step_buffer[0][1]
 
@@ -107,23 +109,24 @@ class NStepReplayBuffer:
         if done:
             self.n_step_buffer.clear()
 
-    def sample(self):
-        indices = np.random.randint(0, self.size, size=self.batch_size)
+    def sample(self, batch_size=None):
+        if batch_size is None:
+            batch_size = self.batch_size
+            
+        indices = np.random.randint(0, self.size, size=batch_size)
 
-        samples = {
-            "observations": torch.from_numpy(self.buffer_obs[indices]).to(self.device),
-            "actions": torch.from_numpy(self.buffer_actions[indices]).to(self.device).unsqueeze(1),
-            "rewards": torch.from_numpy(self.buffer_rewards[indices]).to(self.device).unsqueeze(1),
-            "next_observations": torch.from_numpy(self.buffer_next_obs[indices]).to(self.device),
-            "dones": torch.from_numpy(self.buffer_dones[indices]).to(self.device).unsqueeze(1),
-        }
+        obs = torch.from_numpy(self.buffer_obs[indices]).to(self.device)
+        actions = torch.from_numpy(self.buffer_actions[indices]).to(self.device).unsqueeze(1)
+        rewards = torch.from_numpy(self.buffer_rewards[indices]).to(self.device).unsqueeze(1)
+        next_obs = torch.from_numpy(self.buffer_next_obs[indices]).to(self.device)
+        dones = torch.from_numpy(self.buffer_dones[indices]).to(self.device).unsqueeze(1)
 
-        return NStepBatch(**samples)
+        return NStepBatch(obs, actions, rewards, next_obs, dones)
     
     def __len__(self):
         return self.size
 
-# logic from cleanrl 
+#  --- logic from cleanrl ---
 class SumSegmentTree:
     def __init__(self, capacity):
         self.capacity = capacity
@@ -179,7 +182,7 @@ class MinSegmentTree:
 
 # priortized experience replay buffer
 class PrioritizedReplayBuffer:
-    def __init__(self, capacity, obs_shape, device, n_step, gamma, alpha=0.6, beta=0.4, eps=1e-6):
+    def __init__(self, capacity, obs_shape, device, n_step, gamma, alpha=0.6, beta=0.4, beta_increment=0.001, eps=1e-6):
         self.device = device
         self.capacity = capacity
         self.obs_shape = obs_shape
@@ -187,6 +190,7 @@ class PrioritizedReplayBuffer:
         self.gamma = gamma
         self.alpha = alpha
         self.beta = beta
+        self.beta_increment = beta_increment
         self.eps = eps
 
         self.buffer_obs = np.zeros((capacity,) + obs_shape, dtype=np.float32)
@@ -218,14 +222,18 @@ class PrioritizedReplayBuffer:
         return reward, next_obs, done
     
     def add(self, obs, action, reward, next_obs, done):
-        self.n_step_buffer.append((obs, action, reward, next_obs, done))
-
-        if len(self.n_step_buffer) < self.n_step:   
-            return
-        
-        reward, next_obs, done = self._get_n_step_info()
-        obs = self.n_step_buffer[0][0]
-        action = self.n_step_buffer[0][1]
+        if self.n_step > 1:
+            self.n_step_buffer.append((obs, action, reward, next_obs, done))
+            
+            if len(self.n_step_buffer) < self.n_step and not done:   
+                return
+            
+            reward, next_obs, done = self._get_n_step_info()
+            obs = self.n_step_buffer[0][0]
+            action = self.n_step_buffer[0][1]
+            
+            if done:
+                self.n_step_buffer.clear()
 
         idx = self.pos
         self.buffer_obs[idx] = obs
@@ -244,7 +252,12 @@ class PrioritizedReplayBuffer:
         if done:
             self.n_step_buffer.clear()
 
-    def sample(self, batch_size):
+    def sample(self, batch_size=None):
+        if batch_size is None:
+            batch_size = self.batch_size
+
+        self.beta = min(1.0, self.beta + self.beta_increment)
+
         indices = []
         p_total = self.sum_tree.total()
         segment = p_total / batch_size
@@ -256,23 +269,21 @@ class PrioritizedReplayBuffer:
             idx = self.sum_tree._retrieve(upperbound)
             indices.append(idx)
 
-        samples = {
-            "observations": torch.from_numpy(self.buffer_obs[indices]).to(self.device),
-            "actions": torch.from_numpy(self.buffer_actions[indices]).to(self.device).unsqueeze(1),
-            "rewards": torch.from_numpy(self.buffer_rewards[indices]).to(self.device).unsqueeze(1),
-            "next_observations": torch.from_numpy(self.buffer_next_obs[indices]).to(self.device),
-            "dones": torch.from_numpy(self.buffer_dones[indices]).to(self.device).unsqueeze(1),
-        }
+        obs = torch.from_numpy(self.buffer_obs[indices]).to(self.device)
+        actions = torch.from_numpy(self.buffer_actions[indices]).to(self.device).unsqueeze(1)
+        rewards = torch.from_numpy(self.buffer_rewards[indices]).to(self.device).unsqueeze(1)
+        next_obs = torch.from_numpy(self.buffer_next_obs[indices]).to(self.device)
+        dones = torch.from_numpy(self.buffer_dones[indices]).to(self.device).unsqueeze(1)
 
+        # importance sampling weights
         probs = np.array([self.sum_tree.tree[idx + self.capacity - 1] for idx in indices])
         weights = (self.size * probs / self.sum_tree.total()) ** (-self.beta)
         weights = weights / weights.max()
-        samples["weights"] = torch.from_numpy(weights).to(self.device).unsqueeze(1)
-        samples["indices"] = indices
+        weights = torch.from_numpy(weights).to(self.device).unsqueeze(1)
 
-        return PrioritizedBatch(**samples)
+        return PrioritizedBatch(obs, actions, rewards, next_obs, dones, indices, weights)
     
-    def _update_priorities(self, indices, priorities):
+    def update_priorities(self, indices, priorities):
         priorities = np.abs(priorities) + self.eps
         self.max_priority = max(self.max_priority, priorities.max())
 
@@ -283,7 +294,3 @@ class PrioritizedReplayBuffer:
 
     def __len__(self):
         return self.size
-    
-OneStepBatch = namedtuple("OneStepBatch", ["observations", "actions", "rewards", "next_observations", "dones"])
-NStepBatch = namedtuple("NStepBatch", ["observations", "actions", "rewards", "next_observations", "dones"])
-PrioritizedBatch = namedtuple("PrioritizedBatch", ["observations", "actions", "rewards", "next_observations", "dones", "indices", "weights"])
