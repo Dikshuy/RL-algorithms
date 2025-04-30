@@ -1,5 +1,5 @@
 import numpy as np
-from buffer import ReplayBuffer
+from buffer import ReplayBuffer, NStepReplayBuffer, PrioritizedReplayBuffer
 
 import torch
 import torch.nn as nn
@@ -21,14 +21,43 @@ class QNet(nn.Module):
         return action_value
 
 class DQN:
-    def __init__(self, state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, target_update_freq, device):
+    def __init__(self, state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, target_update_freq, device, buffer_type='standard', alpha=0.6, beta=0.4):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.eval_net = QNet(state_dim, action_dim, device).to(device)
         self.target_net =  QNet(state_dim, action_dim, device).to(device)
         self.target_net.load_state_dict(self.eval_net.state_dict())
 
-        self.memory = ReplayBuffer(buffer_size, batch_size, n_step, gamma, device)
+        # different buffer types
+        if buffer_type == 'standard':
+            self.memory = ReplayBuffer(
+                capacity=buffer_size,
+                obs_shape=(state_dim,),
+                device=device,
+                batch_size=batch_size,
+                gamma=gamma
+            )
+        elif buffer_type == 'n_step':
+            self.memory = NStepReplayBuffer(
+                capacity=buffer_size,
+                obs_shape=(state_dim,),
+                device=device,
+                batch_size=batch_size,
+                n_step=n_step,
+                gamma=gamma
+            )
+        elif buffer_type == 'prioritized':
+            self.memory = PrioritizedReplayBuffer(
+                capacity=buffer_size,
+                obs_shape=(state_dim,),
+                device=device,
+                n_step=n_step,
+                gamma=gamma,
+                alpha=alpha,
+                beta=beta
+            )
+
+        self.buffer_type = buffer_type
         self.batch_size = batch_size
         self.gamma = gamma ** n_step
         self.tau = tau
@@ -54,18 +83,42 @@ class DQN:
         
         return action
 
-    def learn(self, experiences):
-        states, actions, rewards, next_states, dones = experiences
+    def learn(self, experiences=None):
+        if experiences is None:
+            if self.buffer_type == 'prioritized':
+                batch = self.memory.sample(self.batch_size)
+                states = batch.observations
+                actions = batch.actions
+                rewards = batch.rewards
+                next_states = batch.next_observations
+                dones = batch.dones
+                weights = batch.weights
+                indices = batch.indices
+            else:
+                states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
+                weights = torch.ones_like(rewards)  # dummy weights for standard and n-step buffers
+                indices = None
+        else:
+            states, actions, rewards, next_states, dones = experiences
+            weights = torch.ones_like(rewards) # dummy weights for standard and n-step buffers
+            indices = None
 
         # updates for dqn
         q = self.eval_net(states).gather(1, actions)
         q_next = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
         q_target = rewards + self.gamma * q_next * (1 - dones)
 
-        loss = self.loss_func(q, q_target)
+        td_errors = q_target - q
+        loss = (weights * td_errors).pow(2).mean()
+
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # update priorities for prioritized replay buffer
+        if self.buffer_type == 'prioritized' and indices is not None:
+            new_priorities = td_errors.abs().cpu().numpy() + 1e-5
+            self.memory.update_priorities(indices, new_priorities)
 
         # hard update - traditionally dqn performs hard updates
         self.update_counter += 1
@@ -75,3 +128,5 @@ class DQN:
         # soft update - slowly changing target network alternative
         # for target_param, param in zip(self.target_net.parameters(), self.eval_net.parameters()):
         #     target_param.data.copy_(target_param.data * (1-self.tau) + param.data * self.tau)
+
+        return loss.item()
