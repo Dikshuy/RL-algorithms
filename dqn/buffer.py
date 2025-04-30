@@ -1,59 +1,127 @@
-import random
 from collections import namedtuple, deque
-import re
 import torch
 import numpy as np
 
+# replay buffer 
+class ReplayBuffer:
+    def __init__(self, capacity, obs_shape, device, batch_size, gamma=0.99):
+        self.device = device
+        self.capacity = capacity
+        self.obs_shape = obs_shape
+        self.batch_size = batch_size
+        self.gamma = gamma
+
+        self.buffer_obs = np.zeros((capacity,) + obs_shape, dtype=np.float32)
+        self.buffer_actions = np.zeros(capacity, dtype=np.int64)
+        self.buffer_rewards = np.zeros(capacity, dtype=np.float32)
+        self.buffer_next_obs = np.zeros((capacity,) + obs_shape, dtype=np.float32)
+        self.buffer_dones = np.zeros(capacity, dtype=np.bool_)
+
+        self.pos = 0
+        self.size = 0
+
+    def add(self, obs, action, reward, next_obs, done):
+        idx = self.pos
+        self.buffer_obs[idx] = obs
+        self.buffer_actions[idx] = action
+        self.buffer_rewards[idx] = reward
+        self.buffer_next_obs[idx] = next_obs
+        self.buffer_dones[idx] = done
+
+        self.pos = (self.pos + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+    def sample(self):
+        indices = np.random.randint(0, self.size, size=self.batch_size)
+
+        samples = {
+            "observations": torch.from_numpy(self.buffer_obs[indices]).to(self.device),
+            "actions": torch.from_numpy(self.buffer_actions[indices]).to(self.device).unsqueeze(1),
+            "rewards": torch.from_numpy(self.buffer_rewards[indices]).to(self.device).unsqueeze(1),
+            "next_observations": torch.from_numpy(self.buffer_next_obs[indices]).to(self.device),
+            "dones": torch.from_numpy(self.buffer_dones[indices]).to(self.device).unsqueeze(1),
+        }
+
+        return OneStepBatch(**samples)
+    
+    def __len__(self):
+        return self.size
 
 # replay buffer for n-step return
-class ReplayBuffer:
-    def __init__(self, buffer_size, batch_size, n_step, gamma, device):
+class NStepReplayBuffer:
+    def __init__(self, capacity, obs_shape, device, batch_size, n_step=1, gamma=0.99):
         self.device = device
-        self.memory = deque(maxlen=buffer_size)
+        self.capacity = capacity
+        self.obs_shape = obs_shape
+        self.batch_size = batch_size
         self.n_step = n_step
         self.gamma = gamma
-        self.batch_size = batch_size
-        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+
+        self.buffer_obs = np.zeros((capacity,) + obs_shape, dtype=np.float32)
+        self.buffer_actions = np.zeros(capacity, dtype=np.int64)
+        self.buffer_rewards = np.zeros(capacity, dtype=np.float32)
+        self.buffer_next_obs = np.zeros((capacity,) + obs_shape, dtype=np.float32)
+        self.buffer_dones = np.zeros(capacity, dtype=np.bool_)
+
+        self.pos = 0
+        self.size = 0
         self.n_step_buffer = deque(maxlen=n_step)
 
     def _get_n_step_info(self):
-        reward, next_state, done = 0, None, False 
-        for idx, experience in enumerate(self.n_step_buffer):
-            if idx == 0:
-                next_state = experience.next_state 
-            reward += experience.reward * (self.gamma ** idx)
-            if experience.done:
-                done = True
-                if idx != 0:
-                    next_state = self.n_step_buffer[idx-1].next_state
-                break
-                
-        return reward, next_state, done
+        reward = 0.0
+        next_obs = self.n_step_buffer[-1][3]
+        done = self.n_step_buffer[-1][4]
 
-    def add(self, state, action, reward, next_state, done):
-        e = self.experience(state, action, reward, next_state, done)
-        self.n_step_buffer.append(e)
-        if len(self.n_step_buffer) < self.n_step and not done:
+        for i in range(len(self.n_step_buffer)):
+            reward += (self.gamma ** i) * self.n_step_buffer[i][2]
+            if self.n_step_buffer[i][4]:
+                next_obs = self.n_step_buffer[i][3]
+                done = True
+                break
+        return reward, next_obs, done
+    
+    def add(self, obs, action, reward, next_obs, done):
+        self.n_step_buffer.append((obs, action, reward, next_obs, done))
+
+        if len(self.n_step_buffer) < self.n_step and not done:   
             return
+        
         if self.n_step > 1:
-            reward, next_state, done = self._get_n_step_info()
-        first_experience = self.n_step_buffer[0]
-        e = self.experience(first_experience.state, first_experience.action, reward, next_state, done)
-        self.memory.append(e)
+            reward, next_obs, done = self._get_n_step_info()
+        else:
+            reward, next_obs, done = self.n_step_buffer[-1][2], self.n_step_buffer[-1][3], self.n_step_buffer[-1][4]
+
+        obs = self.n_step_buffer[0][0]
+        action = self.n_step_buffer[0][1]
+
+        idx = self.pos
+        self.buffer_obs[idx] = obs
+        self.buffer_actions[idx] = action
+        self.buffer_rewards[idx] = reward
+        self.buffer_next_obs[idx] = next_obs
+        self.buffer_dones[idx] = done
+
+        self.pos = (self.pos + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+        if done:
+            self.n_step_buffer.clear()
 
     def sample(self):
-        experiences = random.sample(self.memory, k=self.batch_size)
+        indices = np.random.randint(0, self.size, size=self.batch_size)
 
-        states = torch.from_numpy(np.stack([e.state for e in experiences if e is not None])).float().to(self.device)
-        actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).long().to(self.device)
-        rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(self.device)
-        next_states = torch.from_numpy(np.stack([e.next_state for e in experiences if e is not None])).float().to(self.device)
-        dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(self.device)
+        samples = {
+            "observations": torch.from_numpy(self.buffer_obs[indices]).to(self.device),
+            "actions": torch.from_numpy(self.buffer_actions[indices]).to(self.device).unsqueeze(1),
+            "rewards": torch.from_numpy(self.buffer_rewards[indices]).to(self.device).unsqueeze(1),
+            "next_observations": torch.from_numpy(self.buffer_next_obs[indices]).to(self.device),
+            "dones": torch.from_numpy(self.buffer_dones[indices]).to(self.device).unsqueeze(1),
+        }
 
-        return (states, actions, rewards, next_states, dones)
-
+        return NStepBatch(**samples)
+    
     def __len__(self):
-        return len(self.memory)
+        return self.size
 
 # logic from cleanrl 
 class SumSegmentTree:
@@ -216,4 +284,6 @@ class PrioritizedReplayBuffer:
     def __len__(self):
         return self.size
     
+OneStepBatch = namedtuple("OneStepBatch", ["observations", "actions", "rewards", "next_observations", "dones"])
+NStepBatch = namedtuple("NStepBatch", ["observations", "actions", "rewards", "next_observations", "dones"])
 PrioritizedBatch = namedtuple("PrioritizedBatch", ["observations", "actions", "rewards", "next_observations", "dones", "indices", "weights"])
