@@ -73,7 +73,7 @@ class DQN:
         q_values = self.eval_net(states).gather(1, actions)
         with torch.no_grad():
             next_q_values = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
-            q_targets = rewards + self.gamma * next_q_values * (1 - dones)
+            q_targets = rewards + self.gamma * next_q_values * (1 - dones.float())
 
         td_errors = q_targets - q_values
         loss = (weights * td_errors.pow(2)).mean()

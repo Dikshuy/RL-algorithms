@@ -74,7 +74,7 @@ class DDQN:
         with torch.no_grad():
             next_actions = self.eval_net(next_states).argmax(dim=1, keepdim=True)
             next_q_values = self.target_net(next_states).gather(1, next_actions)
-            q_targets = rewards + (1 - dones) * self.gamma * next_q_values
+            q_targets = rewards + (1 - dones.float()) * self.gamma * next_q_values
 
         td_errors = q_targets - q_values
         loss = (weights * td_errors.pow(2)).mean()
