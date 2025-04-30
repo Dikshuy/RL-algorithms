@@ -53,7 +53,85 @@ class ReplayBuffer:
 
     def __len__(self):
         return len(self.memory)
+
+class SumSegmentTree:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.tree_size = 2 * capacity - 1
+        self.tree = np.zeros(self.tree_size, dtype=np.float32)
+
+    def _propagate(self, idx):
+        parent = (idx - 1) // 2
+        while parent >= 0:
+            self.tree[parent] = self.tree[2 * parent + 1] + self.tree[2 * parent + 2]
+            parent = (parent - 1) // 2
+
+    def update(self, idx, value):
+        idx += self.capacity - 1
+        self.tree[idx] = value
+        self._propagate(idx)
+
+    def total(self):
+        return self.tree[0]
     
+    def retrieve(self, value):
+        idx = 0
+        while idx * 2 + 1 < self.tree_size:
+            left = idx * 2 + 1
+            right = idx * 2 + 2
+            if value <= self.tree[left]:
+                idx = left
+            else:
+                value -= self.tree[left]
+                idx = right
+
+        return idx - (self.capacity - 1)
+    
+class MinSegmentTree:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.tree_size = 2 * capacity - 1
+        self.tree = np.full(self.tree_size, float("inf"), dtype=np.float32)
+
+    def _propagate(self, idx):
+        parent = (idx - 1) // 2
+        while parent >= 0:
+            self.tree[parent] = min(self.tree[2 * parent + 1], self.tree[2 * parent + 2])
+            parent = (parent - 1) // 2
+
+    def update(self, idx, value):
+        idx += self.capacity - 1
+        self.tree[idx] = value
+        self._propagate(idx)
+
+    def min(self):
+        return self.tree[0]
+
 # priortized experience replay buffer
-class PERBuffer:
-    pass
+class PrioritizedReplayBuffer:
+    def __init__(self, capacity, obs_shape, device, n_step, gamma, alpha=0.6, beta=0.4, eps=1e-6):
+        self.device = device
+        self.capacity = capacity
+        self.obs_shape = obs_shape
+        self.n_step = n_step
+        self.gamma = gamma
+        self.alpha = alpha
+        self.beta = beta
+        self.eps = eps
+
+        self.buffer_obs = np.zeros((capacity,) + obs_shape, dtype=np.float32)
+        self.buffer_actions = np.zeros(capacity, dtype=np.int64)
+        self.buffer_rewards = np.zeros(capacity, dtype=np.float32)
+        self.buffer_next_obs = np.zeros((capacity,) + obs_shape, dtype=np.float32)
+        self.buffer_dones = np.zeros(capacity, dtype=np.bool_)
+
+        self.pos = 0
+        self.size = 0
+        self.max_priority = 1.0
+
+        self.sum_tree = SumSegmentTree(capacity)
+        self.min_tree = MinSegmentTree(capacity)
+
+        self.n_step_buffer = deque(maxlen=n_step)
+
+        self.PriorityBatch = namedtuple("PrioritizedBatch", ["observations", "actions", "rewards", "next_observations", "dones", "indices", "weights"])
