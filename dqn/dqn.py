@@ -1,6 +1,4 @@
 import numpy as np
-from buffer import ReplayBuffer, NStepReplayBuffer, PrioritizedReplayBuffer
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,49 +19,20 @@ class QNet(nn.Module):
         return action_value
 
 class DQN:
-    def __init__(self, state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, target_update_freq, device, buffer_type='standard', alpha=0.6, beta=0.4):
+    def __init__(self, state_dim, action_dim, buffer, lr, optimizer_eps, gamma, tau, target_update_freq, device):
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.eval_net = QNet(state_dim, action_dim, device).to(device)
-        self.target_net =  QNet(state_dim, action_dim, device).to(device)
-        self.target_net.load_state_dict(self.eval_net.state_dict())
-
-        # different buffer types
-        if buffer_type == 'standard':
-            self.memory = ReplayBuffer(
-                capacity=buffer_size,
-                obs_shape=(state_dim,),
-                device=device,
-                batch_size=batch_size,
-                gamma=gamma
-            )
-        elif buffer_type == 'n_step':
-            self.memory = NStepReplayBuffer(
-                capacity=buffer_size,
-                obs_shape=(state_dim,),
-                device=device,
-                batch_size=batch_size,
-                n_step=n_step,
-                gamma=gamma
-            )
-        elif buffer_type == 'prioritized':
-            self.memory = PrioritizedReplayBuffer(
-                capacity=buffer_size,
-                obs_shape=(state_dim,),
-                device=device,
-                n_step=n_step,
-                gamma=gamma,
-                alpha=alpha,
-                beta=beta
-            )
-
-        self.buffer_type = buffer_type
-        self.batch_size = batch_size
-        self.gamma = gamma ** n_step
+        self.memory = buffer
+        self.gamma = gamma
         self.tau = tau
         self.target_update_freq = target_update_freq
         self.update_counter = 0
         self.device = device
+
+        self.eval_net = QNet(state_dim, action_dim, device).to(device)
+        self.target_net =  QNet(state_dim, action_dim, device).to(device)
+        self.target_net.load_state_dict(self.eval_net.state_dict())
+        self.target_net.eval()
 
         self.optimizer = optim.Adam(self.eval_net.parameters(), lr=lr, eps=optimizer_eps)
         self.loss_func = nn.MSELoss()
@@ -83,41 +52,39 @@ class DQN:
         
         return action
 
-    def learn(self, experiences=None):
-        if experiences is None:
-            if self.buffer_type == 'prioritized':
-                batch = self.memory.sample(self.batch_size)
-                states = batch.observations
-                actions = batch.actions
-                rewards = batch.rewards
-                next_states = batch.next_observations
-                dones = batch.dones
-                weights = batch.weights
-                indices = batch.indices
-            else:
-                states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
-                weights = torch.ones_like(rewards)  # dummy weights for standard and n-step buffers
-                indices = None
-        else:
-            states, actions, rewards, next_states, dones = experiences
-            weights = torch.ones_like(rewards) # dummy weights for standard and n-step buffers
-            indices = None
+    def learn(self):
+        batch = self.memory.sample()
+        states = batch.observations
+        actions = batch.actions
+        rewards = batch.rewards
+        next_states = batch.next_observations
+        dones = batch.dones
+        
+        # default weights for standard and n-step buffer
+        weights = torch.ones_like(rewards)
+        indices = None
+
+        # in case of PER buffer
+        if hasattr(batch, 'weights') and hasattr(batch, 'indices'):
+            weights = batch.weights
+            indices = batch.indices
 
         # updates for dqn
-        q = self.eval_net(states).gather(1, actions)
-        q_next = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
-        q_target = rewards + self.gamma * q_next * (1 - dones)
+        q_values = self.eval_net(states).gather(1, actions)
+        with torch.no_grad():
+            next_q_values = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
+            q_targets = rewards + self.gamma * next_q_values * (1 - dones)
 
-        td_errors = q_target - q
-        loss = (weights * td_errors).pow(2).mean()
+        td_errors = q_targets - q_values
+        loss = (weights * td_errors.pow(2)).mean()
 
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
         # update priorities for prioritized replay buffer
-        if self.buffer_type == 'prioritized' and indices is not None:
-            new_priorities = td_errors.abs().cpu().numpy() + 1e-5
+        if hasattr(batch, 'indices') and indices is not None:
+            new_priorities = td_errors.abs().detach().cpu().numpy() + 1e-6
             self.memory.update_priorities(indices, new_priorities)
 
         # hard update - traditionally dqn performs hard updates

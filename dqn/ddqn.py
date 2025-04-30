@@ -1,6 +1,4 @@
 import numpy as np
-from buffer import ReplayBuffer
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,20 +19,20 @@ class QNet(nn.Module):
         return action_value
 
 class DDQN:
-    def __init__(self, state_dim, action_dim, buffer_size, batch_size, lr, optimizer_eps, gamma, n_step, tau, target_update_freq, device):
+    def __init__(self, state_dim, action_dim, buffer, lr, optimizer_eps, gamma, tau, target_update_freq, device):
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.eval_net = QNet(state_dim, action_dim, device).to(device)
-        self.target_net =  QNet(state_dim, action_dim, device).to(device)
-        self.target_net.load_state_dict(self.eval_net.state_dict())
-
-        self.memory = ReplayBuffer(buffer_size, batch_size, n_step, gamma, device)
-        self.batch_size = batch_size
-        self.gamma = gamma ** n_step
+        self.memory = buffer
+        self.gamma = gamma
         self.tau = tau
         self.target_update_freq = target_update_freq
         self.update_counter = 0
         self.device = device
+
+        self.eval_net = QNet(state_dim, action_dim, device).to(device)
+        self.target_net =  QNet(state_dim, action_dim, device).to(device)
+        self.target_net.load_state_dict(self.eval_net.state_dict())
+        self.target_net.eval()
 
         self.optimizer = optim.Adam(self.eval_net.parameters(), lr=lr, eps=optimizer_eps)
         self.loss_func = nn.MSELoss()
@@ -54,19 +52,41 @@ class DDQN:
         
         return action
 
-    def learn(self, experiences):
-        states, actions, rewards, next_states, dones = experiences
+    def learn(self):
+        batch = self.memory.sample()
+        states = batch.observations
+        actions = batch.actions
+        rewards = batch.rewards
+        next_states = batch.next_observations
+        dones = batch.dones
+        
+        # default weights for standard and n-step buffer
+        weights = torch.ones_like(rewards)
+        indices = None
+
+        # in case of PER buffer
+        if hasattr(batch, 'weights') and hasattr(batch, 'indices'):
+            weights = batch.weights
+            indices = batch.indices
 
         # updates for double dqn
-        q = self.eval_net(states).gather(1, actions)
-        max_action_indices = self.eval_net(next_states).argmax(1).unsqueeze(1)
-        q_next = self.target_net(next_states).gather(1, max_action_indices)
-        q_target = rewards + self.gamma * q_next * (1 - dones)
+        q_values = self.eval_net(states).gather(1, actions)
+        with torch.no_grad():
+            next_actions = self.eval_net(next_states).argmax(dim=1, keepdim=True)
+            next_q_values = self.target_net(next_states).gather(1, next_actions)
+            q_targets = rewards + (1 - dones) * self.gamma * next_q_values
 
-        loss = self.loss_func(q, q_target)
+        td_errors = q_targets - q_values
+        loss = (weights * td_errors.pow(2)).mean()
+
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # update priorities for prioritized replay buffer
+        if hasattr(batch, 'indices') and indices is not None:
+            new_priorities = td_errors.abs().detach().cpu().numpy() + 1e-6
+            self.memory.update_priorities(indices, new_priorities)
 
         # hard update - traditionally dqn performs hard updates
         self.update_counter += 1
@@ -76,3 +96,5 @@ class DDQN:
         # soft update - slowly changing target network alternative
         # for target_param, param in zip(self.target_net.parameters(), self.eval_net.parameters()):
         #     target_param.data.copy_(target_param.data * (1-self.tau) + param.data * self.tau)
+
+        return loss.item()
